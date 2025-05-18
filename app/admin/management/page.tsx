@@ -443,6 +443,9 @@ const NO_CATEGORY_VALUE = "__NO_CATEGORY__"; // Constant for "Uncategorized" opt
                 <Button variant="outline" onClick={() => router.push('/dashboard')}>
                     <Home size={18} className="mr-2"/> Back to Dashboard
                 </Button>
+                 <Button variant="outline" onClick={() => router.push('/knowledge-base')} className="ml-2">
+                    <BookOpen size={18} className="mr-2"/> Go to Knowledge Base
+                </Button>
             </div>
 
             {/* Knowledge Base Categories Section */}

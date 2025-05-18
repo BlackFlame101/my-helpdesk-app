@@ -151,10 +151,15 @@ const TICKET_SELECT_QUERY = `
 `;
 
 
-export async function fetchTicketsForUser(): Promise<Ticket[]> {
-  const { data, error } = await supabase.from('tickets').select(TICKET_SELECT_QUERY).order('created_at', { ascending: false });
+export async function fetchTicketsForUser(limit: number, offset: number): Promise<{ tickets: Ticket[], count: number | null }> {
+  const { data, error, count } = await supabase
+    .from('tickets')
+    .select(`${TICKET_SELECT_QUERY}`, { count: 'exact' })
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1); // Supabase range is inclusive
+
   if (error) { console.error('Error fetching tickets:', error.message); throw error; }
-  return (data as unknown as Ticket[]) || [];
+  return { tickets: (data as unknown as Ticket[]) || [], count };
 }
 
 export async function createTicket(ticketData: NewTicketData): Promise<Ticket | null> {

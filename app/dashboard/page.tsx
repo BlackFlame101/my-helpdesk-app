@@ -113,6 +113,11 @@ export default function RevampedDashboardPage() {
   const [isUpdatingTicket, setIsUpdatingTicket] = useState(false);
   const [isBackgroundLoading, setIsBackgroundLoading] = useState(false);
 
+  // Pagination states
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage] = useState(10); // You can make this configurable
+  const [totalTickets, setTotalTickets] = useState<number | null>(null);
+
   // Comment specific states
   const [comments, setComments] = useState<Comment[]>([]);
   const [isLoadingComments, setIsLoadingComments] = useState(false);
@@ -138,32 +143,34 @@ export default function RevampedDashboardPage() {
 
 
 const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
-    
+
     if (!session) return;
-  
-    
+
+
     if (showLoadingIndicator) {
       setIsLoadingData(true);
     } else {
       setIsBackgroundLoading(true);
     }
-  
+
     try {
-      const [userTickets, fetchedPriorities, fetchedStatuses, fetchedAgents, fetchedTicketTypes] = await Promise.all([
-        fetchTicketsForUser(),
+      const offset = (currentPage - 1) * itemsPerPage;
+      const [ticketData, fetchedPriorities, fetchedStatuses, fetchedAgents, fetchedTicketTypes] = await Promise.all([
+        fetchTicketsForUser(itemsPerPage, offset), // Fetch with pagination
         fetchTicketPriorities(),
         fetchTicketStatuses(),
         fetchAgents(),
-        fetchTicketTypes() // Added
+        fetchTicketTypes()
       ]);
-      
-      
-      setTickets(prev => JSON.stringify(prev) !== JSON.stringify(userTickets) ? userTickets : prev);
+
+
+      setTickets(prev => JSON.stringify(prev) !== JSON.stringify(ticketData.tickets) ? ticketData.tickets : prev);
+      setTotalTickets(ticketData.count); // Set total count for pagination
       setPriorities(prev => JSON.stringify(prev) !== JSON.stringify(fetchedPriorities) ? fetchedPriorities : prev);
       setStatuses(prev => JSON.stringify(prev) !== JSON.stringify(fetchedStatuses) ? fetchedStatuses : prev);
       setAgents(prev => JSON.stringify(prev) !== JSON.stringify(fetchedAgents) ? fetchedAgents : prev);
-      setTicketTypes(prev => JSON.stringify(prev) !== JSON.stringify(fetchedTicketTypes) ? fetchedTicketTypes : prev); // Added
-      
+      setTicketTypes(prev => JSON.stringify(prev) !== JSON.stringify(fetchedTicketTypes) ? fetchedTicketTypes : prev);
+
       setDataError(null);
     } catch (err: any) {
       console.error("Failed to load dashboard data:", err);
@@ -178,25 +185,24 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
         setIsBackgroundLoading(false);
       }
     }
-  }, [session, showToast]); 
+  }, [session, showToast, currentPage, itemsPerPage]); // Added currentPage and itemsPerPage
 
   useEffect(() => {
     if (authLoading) {
-      
-      
+
+
       return;
     }
 
     if (!session) {
       router.push('/login');
-      initialLoadDone.current = false; 
+      initialLoadDone.current = false;
       return;
     }
 
-    
-    
+
     const showMainLoader = !initialLoadDone.current;
-    loadInitialData(showMainLoader); 
+    loadInitialData(showMainLoader);
     initialLoadDone.current = true;
 
     // The unread count is now handled by AuthContext's real-time subscription.
@@ -204,7 +210,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
     // or if you want a redundant fetch on dashboard load specifically.
     // For now, we'll rely on the context.
 
-  }, [session, authLoading, router, loadInitialData, user]); // user dependency is still good if other parts of loadInitialData depend on it
+  }, [session, authLoading, router, loadInitialData, user, currentPage]); // Added currentPage to dependencies
 
   
 
@@ -663,6 +669,27 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
                       </Card>
                     );
                   })}
+                </div>
+              )}
+
+              {/* Pagination Controls */}
+              {!isLoadingData && !dataError && totalTickets !== null && totalTickets > itemsPerPage && (
+                <div className="flex justify-center items-center space-x-4 mt-6">
+                  <Button
+                    variant="outline"
+                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={currentPage === 1 || isLoadingData}
+                  >
+                    Previous
+                  </Button>
+                  <span>Page {currentPage} of {Math.ceil(totalTickets / itemsPerPage)}</span>
+                  <Button
+                    variant="outline"
+                    onClick={() => setCurrentPage(prev => prev + 1)}
+                    disabled={currentPage * itemsPerPage >= totalTickets || isLoadingData}
+                  >
+                    Next
+                  </Button>
                 </div>
               )}
             </main>
