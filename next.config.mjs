@@ -8,15 +8,6 @@ const nextConfig = {
     domains: ['localhost'], // Add your image domains here
     unoptimized: process.env.NODE_ENV === 'development',
   },
-  
-  // CSS configuration
-  webpack: (config) => {
-    config.module.rules.push({
-      test: /\.css$/,
-      use: ['style-loader', 'css-loader', 'postcss-loader'],
-    });
-    return config;
-  },
 
   // Temporarily keep these during deployment debugging
   // Remove them once deployment is stable
