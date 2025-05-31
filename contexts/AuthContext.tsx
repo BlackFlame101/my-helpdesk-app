@@ -20,6 +20,7 @@ const PROFILE_FETCH_TIMEOUT = 8000; // 8 seconds
 const NOTIFICATION_DEBOUNCE = 300; // 300ms
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // 1 second
+const INITIAL_AUTH_TIMEOUT = 10000; // 10 seconds maximum for initial auth
 
 export interface UserProfile {
   id: string;
@@ -87,29 +88,34 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true); // For initial auth session check
-  const [isProfileLoading, setIsProfileLoading] = useState(false); // For profile/notification fetching
+  const [loading, setLoading] = useState(true);
+  const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
-  const [initComplete, setInitComplete] = useState(false); // Track if initialization is complete
+  const [initComplete, setInitComplete] = useState(false);
   
   // Refs
   const notificationChannelRef = useRef<RealtimeChannel | null>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
   const authRetryCountRef = useRef(0);
-  
-  // Clear any existing timeouts to prevent memory leaks
-  const clearTimeouts = useCallback(() => {
+  const initialAuthTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Clear all timeouts
+  const clearAllTimeouts = useCallback(() => {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
+    }
+    if (initialAuthTimeoutRef.current) {
+      clearTimeout(initialAuthTimeoutRef.current);
+      initialAuthTimeoutRef.current = null;
     }
   }, []);
 
   // Complete app state reset function
   const resetAppState = useCallback(() => {
     console.log("Resetting application state...");
-    clearTimeouts();
+    clearAllTimeouts();
     
     // Reset all state
     setSession(null);
@@ -141,7 +147,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const safeSetProfileLoading = useCallback((isLoading: boolean) => {
     if (!mountedRef.current) return;
     
-    clearTimeouts();
+    clearAllTimeouts();
     
     if (isLoading) {
       // If setting to loading=true, also set a timeout to reset it
@@ -156,7 +162,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // If setting to loading=false, just set it
       setIsProfileLoading(false);
     }
-  }, [clearTimeouts]);
+  }, [clearAllTimeouts]);
 
   // Debounced version of the notification refresh to prevent rapid refetching
   const debouncedRefreshNotifications = useCallback(
@@ -245,132 +251,175 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   // Function to refresh auth state - can be called manually to reinitialize
   const refreshAuthState = useCallback(async () => {
+    console.log("[Auth Debug] Starting refreshAuthState");
     if (authRetryCountRef.current > 3 || !mountedRef.current) {
-      console.warn("Too many auth refresh attempts or component unmounted, aborting");
+      console.warn("[Auth Debug] Too many auth refresh attempts or component unmounted, aborting");
+      setLoading(false); // Ensure we're not stuck loading
       return;
     }
     
     authRetryCountRef.current += 1;
+    console.log("[Auth Debug] Attempt #", authRetryCountRef.current);
     
     try {
-      setLoading(true);
-      
       const { data: { session: currentSession }, error: sessionError } = await supabase.auth.getSession();
+      console.log("[Auth Debug] Got session response:", { hasSession: !!currentSession, hasError: !!sessionError });
       
       if (sessionError) {
+        console.error("[Auth Debug] Session error:", sessionError);
         throw sessionError;
       }
 
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) {
+        console.log("[Auth Debug] Component unmounted during session fetch");
+        return;
+      }
       
       setSession(currentSession);
       const currentUser = currentSession?.user ?? null;
       setUser(currentUser);
+      console.log("[Auth Debug] Updated session and user state:", { hasUser: !!currentUser });
 
       if (currentUser) {
         try {
+          console.log("[Auth Debug] Fetching user profile");
           await fetchUserProfileAndNotifications(currentUser.id);
+          console.log("[Auth Debug] Successfully fetched profile");
+          // Ensure we clear loading state after successful profile fetch
+          if (mountedRef.current) {
+            setLoading(false);
+            setInitComplete(true);
+          }
         } catch (profileError) {
-          console.error("Error fetching initial user profile:", profileError);
+          console.error("[Auth Debug] Error fetching initial user profile:", profileError);
           if (mountedRef.current) {
             setProfile(null);
             setUnreadNotificationsCount(0);
+            setLoading(false);
+            setInitComplete(true);
           }
         }
       } else {
+        console.log("[Auth Debug] No user, clearing profile");
         setProfile(null);
         setUnreadNotificationsCount(0);
+        if (mountedRef.current) {
+          setLoading(false);
+          setInitComplete(true);
+        }
       }
-      
-      setInitComplete(true);
     } catch (error) {
-      console.error("Error refreshing auth state:", error);
+      console.error("[Auth Debug] Error refreshing auth state:", error);
       if (mountedRef.current) {
         setSession(null);
         setUser(null);
         setProfile(null);
         setUnreadNotificationsCount(0);
-        setInitComplete(true);
-      }
-    } finally {
-      if (mountedRef.current) {
         setLoading(false);
-        
-        // Reset retry counter after a successful refresh or final attempt
-        setTimeout(() => {
-          authRetryCountRef.current = 0;
-        }, 10000);
+        setInitComplete(true);
       }
     }
   }, [fetchUserProfileAndNotifications]);
 
   // Effect for initial session and auth state changes
   useEffect(() => {
+    console.log("[Auth Debug] Initializing auth effect");
     mountedRef.current = true;
+    let isEffectActive = true; // Add local flag for this effect instance
     
-    refreshAuthState();
+    // Set a timeout to prevent infinite loading
+    initialAuthTimeoutRef.current = setTimeout(() => {
+      if (isEffectActive && loading) {
+        console.warn('[Auth Debug] Initial auth timed out, resetting state...');
+        setLoading(false);
+        setInitComplete(true);
+        setSession(null);
+        setUser(null);
+        setProfile(null);
+      }
+    }, INITIAL_AUTH_TIMEOUT);
+
+    // Initialize auth state
+    refreshAuthState().catch(error => {
+      console.error("[Auth Debug] Error during initial auth:", error);
+      if (isEffectActive) {
+        setLoading(false);
+        setInitComplete(true);
+      }
+    });
 
     const { data: authListener } = supabase.auth.onAuthStateChange(
       async (_event, currentSession) => {
-        if (!mountedRef.current) return;
+        console.log("[Auth Debug] Auth state change event:", _event);
+        if (!isEffectActive) {
+          console.log("[Auth Debug] Ignoring auth change - effect cleanup triggered");
+          return;
+        }
         
         try {
-          // First update react state with basic session info
           setSession(currentSession);
           const newCurrentUser = currentSession?.user ?? null;
           setUser(newCurrentUser);
+          console.log("[Auth Debug] Updated auth state:", { hasUser: !!newCurrentUser });
 
           if (newCurrentUser) {
-            // If user changes (e.g., login) or if profile is not yet loaded for current user
             if (newCurrentUser.id !== profile?.id || !profile) {
               try {
+                console.log("[Auth Debug] Fetching profile for new user");
                 await fetchUserProfileAndNotifications(newCurrentUser.id);
               } catch (profileError) {
-                console.error("Error fetching user profile on auth change:", profileError);
-                // Reset states on error and retry once more
+                console.error("[Auth Debug] Error fetching user profile on auth change:", profileError);
                 safeSetProfileLoading(false);
                 
-                // One more attempt after a short delay
-                setTimeout(() => {
-                  if (mountedRef.current && newCurrentUser.id) {
-                    fetchUserProfileAndNotifications(newCurrentUser.id).catch(e => 
-                      console.error("Retry fetch user profile failed:", e)
-                    );
-                  }
-                }, 2000);
+                if (isEffectActive && newCurrentUser.id) {
+                  setTimeout(() => {
+                    if (isEffectActive && newCurrentUser.id) {
+                      fetchUserProfileAndNotifications(newCurrentUser.id).catch(e => 
+                        console.error("[Auth Debug] Retry fetch user profile failed:", e)
+                      );
+                    }
+                  }, 2000);
+                }
               }
             }
           } else {
-            // User signed out
+            console.log("[Auth Debug] No user in auth change, clearing profile");
             setProfile(null);
             setUnreadNotificationsCount(0);
           }
         } catch (error) {
-          console.error("Error in auth state change handler:", error);
+          console.error("[Auth Debug] Error in auth state change handler:", error);
           safeSetProfileLoading(false);
         } finally {
-          // Reset loading after initial auth state processing
-          if (_event === 'INITIAL_SESSION' && mountedRef.current) {
+          if (_event === 'INITIAL_SESSION' && isEffectActive) {
+            console.log("[Auth Debug] Initial session complete");
             setLoading(false);
             setInitComplete(true);
+            // Clear the initial auth timeout since we're done
+            if (initialAuthTimeoutRef.current) {
+              clearTimeout(initialAuthTimeoutRef.current);
+              initialAuthTimeoutRef.current = null;
+            }
           }
         }
       }
     );
 
     return () => {
+      console.log("[Auth Debug] Cleaning up auth effect");
+      isEffectActive = false; // Mark this effect instance as inactive
       mountedRef.current = false;
-      clearTimeouts();
+      clearAllTimeouts();
       
       if (authListener?.subscription) {
         try {
           authListener.subscription.unsubscribe();
         } catch (error) {
-          console.error("Error unsubscribing from auth listener:", error);
+          console.error("[Auth Debug] Error unsubscribing from auth listener:", error);
         }
       }
     };
-  }, [refreshAuthState, fetchUserProfileAndNotifications, clearTimeouts, safeSetProfileLoading, profile?.id]);
+  }, [refreshAuthState, fetchUserProfileAndNotifications, clearAllTimeouts, safeSetProfileLoading, profile?.id, loading]);
 
   // Effect for Realtime Notification Subscription
   useEffect(() => {
@@ -450,25 +499,35 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setupNotificationChannel();
 
     return () => {
-      const cleanupChannel = async () => {
-        if (notificationChannelRef.current) {
-          try {
-            await supabase.removeChannel(notificationChannelRef.current);
-          } catch (error) {
-            console.error('Error removing notification channel on cleanup:', error);
-          } finally {
-            notificationChannelRef.current = null;
-          }
-        }
-      };
+      // Immediately mark component as unmounted
+      mountedRef.current = false;
       
-      cleanupChannel();
+      // Clean up timeouts
+      clearAllTimeouts();
+      
+      // Clean up notification channel synchronously
+      if (notificationChannelRef.current) {
+        try {
+          // Use Promise.resolve to handle both sync and async cases
+          Promise.resolve(supabase.removeChannel(notificationChannelRef.current))
+            .catch(error => {
+              console.error('Error removing notification channel on cleanup:', error);
+            })
+            .finally(() => {
+              notificationChannelRef.current = null;
+            });
+        } catch (error) {
+          console.error('Error initiating channel cleanup:', error);
+          notificationChannelRef.current = null;
+        }
+      }
     };
-  }, [user?.id, refreshUnreadCount]);
+  }, [user?.id, refreshUnreadCount, clearAllTimeouts]);
 
   // Login function with proper error handling and retry
   const login = async (email: string, password: string) => {
     try {
+      safeSetProfileLoading(true);
       return await withRetry(async () => {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
@@ -477,12 +536,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } catch (error) {
       console.error("Login error after retries:", error);
       throw error; // Re-throw for UI handling
+    } finally {
+      safeSetProfileLoading(false);
     }
   };
 
   // Signup function with proper error handling and retry
   const signUp = async (email: string, password: string, fullName?: string) => {
     try {
+      safeSetProfileLoading(true);
       return await withRetry(async () => {
         const { data, error } = await supabase.auth.signUp({
           email, password, options: { data: { full_name: fullName } }
@@ -493,12 +555,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } catch (error) {
       console.error("Signup error after retries:", error);
       throw error; // Re-throw for UI handling
+    } finally {
+      safeSetProfileLoading(false);
     }
   };
 
   // Logout function with proper error handling
   const logout = async () => {
     try {
+      safeSetProfileLoading(true);
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
       // Force reset state regardless of success to ensure UI consistency
@@ -508,6 +573,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // Force reset state on error
       resetAppState();
       throw error; // Re-throw for UI handling
+    } finally {
+      safeSetProfileLoading(false);
     }
   };
 

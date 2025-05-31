@@ -3,6 +3,10 @@ import { supabase } from './supabaseClient'; // Ensure this path is correct
 
 // --- Interfaces ---
 
+// Access environment variable directly here for manual URL construction fallback
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+
+
 export interface TicketType {
   id: number;
   name: string;
@@ -186,6 +190,502 @@ export async function fetchTicketTypes(): Promise<TicketType[]> {
     return data || [];
 }
 
+export async function fetchTicketCountsByStatus(statusName?: string): Promise<number | null> {
+    let query = supabase.from('tickets').select('count', { count: 'exact', head: true });
+
+    if (statusName) {
+        // First, find the status ID for the given name
+        const { data: statusData, error: statusError } = await supabase
+            .from('ticket_statuses')
+            .select('id')
+            .eq('name', statusName)
+            .maybeSingle(); // Use maybeSingle to handle cases with no matching row
+
+        if (statusError) {
+            console.error(`Error finding status ID for name "${statusName}":`, statusError.message);
+            throw statusError;
+        }
+
+        if (statusData) {
+            query = query.eq('status_id', statusData.id);
+        } else {
+            console.warn(`Status "${statusName}" not found.`);
+            return 0; // Status not found, so count is 0
+        }
+    }
+
+    const { count, error } = await query;
+
+    if (error) {
+        console.error(`Error fetching ticket count for status "${statusName || 'all'}":`, error.message);
+        throw error;
+    }
+
+    return count;
+}
+
+export async function fetchTicketCountsOverTime(
+    interval: 'day' | 'week' | 'month',
+    startDate: string,
+    endDate: string
+): Promise<{ time_period: string; count: number }[]> {
+    // Supabase doesn't have a direct way to group by arbitrary time intervals like 'week' or 'month' easily in RPCs
+    // without specific database functions. A common approach is to fetch data within the range
+    // and process/group it on the client side, or create a custom SQL function/view in Supabase.
+    // For simplicity and broader compatibility, we'll fetch tickets within the range and process on the client.
+    // A more scalable solution for large datasets would involve a backend function or materialized view.
+
+    const { data, error } = await supabase
+        .from('tickets')
+        .select('created_at')
+        .gte('created_at', startDate)
+        .lte('created_at', endDate)
+        .order('created_at', { ascending: true });
+
+    if (error) {
+        console.error(`Error fetching tickets for time series data (${interval}):`, error.message);
+        throw error;
+    }
+
+    if (!data) return [];
+
+    // Client-side grouping
+    const counts: { [key: string]: number } = {};
+    const formatOptions: Intl.DateTimeFormatOptions = {};
+
+    if (interval === 'day') {
+        formatOptions.year = 'numeric';
+        formatOptions.month = '2-digit';
+        formatOptions.day = '2-digit';
+    } else if (interval === 'week') {
+         // Note: Week grouping is tricky client-side without a library or server-side logic
+         // This is a simplified approach, might need refinement based on desired week definition (e.g., ISO 8601)
+         // For now, we'll group by the start date of the week.
+         formatOptions.year = 'numeric';
+         formatOptions.month = '2-digit';
+         formatOptions.day = '2-digit';
+         // Need a way to get the start of the week for each date
+    } else if (interval === 'month') {
+        formatOptions.year = 'numeric';
+        formatOptions.month = 'long';
+    }
+
+    data.forEach(ticket => {
+        const date = new Date(ticket.created_at);
+        let periodKey: string;
+
+        if (interval === 'week') {
+             // Simple week grouping: use the date of the first day of the week (e.g., Sunday)
+             const firstDayOfWeek = new Date(date);
+             firstDayOfWeek.setDate(date.getDate() - date.getDay()); // Adjust to Sunday
+             periodKey = firstDayOfWeek.toLocaleDateString(undefined, { year: 'numeric', month: '2-digit', day: '2-digit' });
+        } else {
+             periodKey = date.toLocaleDateString(undefined, formatOptions);
+        }
+
+
+        counts[periodKey] = (counts[periodKey] || 0) + 1;
+    });
+
+    // Convert counts object to array of { time_period, count }
+    const result = Object.keys(counts).map(key => ({
+        time_period: key,
+        count: counts[key]
+    }));
+
+    // Sort by time period (this might need more robust date parsing for correct sorting)
+    // For 'day' and 'month' with numeric year/month, string sort might work. 'week' is trickier.
+    // A better approach would be to store the actual date object or a sortable string/number.
+     result.sort((a, b) => {
+         // Simple string comparison for sorting - may not be perfect for all date formats/intervals
+         return a.time_period.localeCompare(b.time_period);
+     });
+
+
+    return result;
+}
+
+// --- Report Specific Data Fetching Functions ---
+
+export async function fetchTicketVolumeBy(dimension: 'type' | 'status' | 'priority' | 'assignee'): Promise<{ dimension: string; count: number }[]> {
+    let selectQuery = '';
+    let joinTable = '';
+    let dimensionColumn = '';
+    let dimensionNameColumn = '';
+
+    switch (dimension) {
+        case 'type':
+            selectQuery = 'ticket_type_id, count';
+            joinTable = 'ticket_types';
+            dimensionColumn = 'ticket_type_id';
+            dimensionNameColumn = 'name';
+            break;
+        case 'status':
+            selectQuery = 'status_id, count';
+            joinTable = 'ticket_statuses';
+            dimensionColumn = 'status_id';
+            dimensionNameColumn = 'name';
+            break;
+        case 'priority':
+            selectQuery = 'priority_id, count';
+            joinTable = 'ticket_priorities';
+            dimensionColumn = 'priority_id';
+            dimensionNameColumn = 'name';
+            break;
+        case 'assignee':
+            selectQuery = 'assignee_id, count';
+            joinTable = 'profiles'; // Joining with profiles to get assignee name
+            dimensionColumn = 'assignee_id';
+            dimensionNameColumn = 'full_name';
+            break;
+        default:
+            throw new Error(`Invalid dimension: ${dimension}`);
+    }
+
+    // This requires a database function or view for efficient grouping and counting.
+    // As a client-side fallback (less efficient for large data), we can fetch all tickets
+    // and group/count them here. A better approach would be a Supabase RPC or SQL view.
+
+    const { data, error } = await supabase
+        .from('tickets')
+        .select(`${dimensionColumn}${dimension === 'assignee' ? ', assignee_profile:profiles!tickets_assignee_id_fkey(full_name)' : ''}`);
+
+
+    if (error) {
+        console.error(`Error fetching ticket volume by ${dimension}:`, error.message);
+        throw error;
+    }
+
+    if (!data) return [];
+
+    const counts: { [key: string]: number } = {};
+
+    data.forEach(ticket => {
+        let key: string | null | undefined;
+        if (dimension === 'assignee') {
+             key = (ticket as any).assignee_profile?.full_name;
+             if (key === null || key === undefined) {
+                 key = 'Unassigned';
+             }
+        } else {
+             key = (ticket as any)[dimensionColumn]?.toString();
+             if (key === null || key === undefined) {
+                 key = `Unknown ${dimension}`;
+             }
+        }
+
+
+        if (key !== undefined && key !== null) { // Ensure key is not undefined or null
+             counts[key] = (counts[key] || 0) + 1;
+        }
+    });
+
+    // If grouping by ID, try to fetch names (less efficient)
+    if (dimension !== 'assignee' && (dimensionColumn === 'ticket_type_id' || dimensionColumn === 'status_id' || dimensionColumn === 'priority_id')) {
+        try {
+            const { data: namesData, error: namesError } = await supabase.from(joinTable).select('id, name');
+            if (!namesError && namesData) {
+                const nameMap = new Map(namesData.map(item => [item.id.toString(), item.name]));
+                 return Object.keys(counts).map(id => ({
+                     dimension: nameMap.get(id) || `Unknown ${dimension} (${id})`,
+                     count: counts[id]
+                 }));
+            }
+        } catch (e) {
+            console.error(`Failed to fetch names for ${dimension} IDs:`, e);
+        }
+    }
+
+
+    return Object.keys(counts).map(key => ({
+        dimension: key,
+        count: counts[key]
+    }));
+}
+
+export async function fetchAgentPerformance(): Promise<{ agent: string; assigned: number; resolved: number; closed: number; average_resolution_time: string | null }[]> {
+    // This is a complex report requiring aggregation and joins.
+    // A database view or RPC would be the most efficient.
+    // Client-side processing would be very inefficient for large datasets.
+    // Placeholder implementation: Fetch all tickets and agents and process client-side.
+
+    const { data: ticketsData, error: ticketsError } = await supabase
+        .from('tickets')
+        .select('id, assignee_id, status_id, created_at, updated_at');
+
+    const { data: agentsData, error: agentsError } = await supabase
+        .from('profiles')
+        .select('id, full_name')
+        .eq('role', 'agent');
+
+    const { data: statusesData, error: statusesError } = await supabase
+        .from('ticket_statuses')
+        .select('id, name');
+
+
+    if (ticketsError) { console.error('Error fetching tickets for agent performance:', ticketsError.message); throw ticketsError; }
+    if (agentsError) { console.error('Error fetching agents for agent performance:', agentsError.message); throw agentsError; }
+    if (statusesError) { console.error('Error fetching statuses for agent performance:', statusesError.message); throw statusesError; }
+
+    if (!ticketsData || !agentsData || !statusesData) return [];
+
+    const statusNameMap = new Map(statusesData.map(s => [s.id, s.name]));
+    const agentNameMap = new Map(agentsData.map(a => [a.id, a.full_name || 'Unknown Agent']));
+
+    const agentMetrics: { [agentId: string]: { assigned: number; resolved: number; closed: number; resolutionTimes: number[] } } = {};
+
+    agentsData.forEach(agent => {
+        agentMetrics[agent.id] = { assigned: 0, resolved: 0, closed: 0, resolutionTimes: [] };
+    });
+
+    ticketsData.forEach(ticket => {
+        if (ticket.assignee_id && agentMetrics[ticket.assignee_id]) {
+            agentMetrics[ticket.assignee_id].assigned++;
+
+            const statusName = statusNameMap.get(ticket.status_id);
+            if (statusName === 'Resolved') { // Assuming 'Resolved' is the status name for resolved tickets
+                agentMetrics[ticket.assignee_id].resolved++;
+                if (ticket.created_at && ticket.updated_at) {
+                    const createdAt = new Date(ticket.created_at).getTime();
+                    const updatedAt = new Date(ticket.updated_at).getTime();
+                    agentMetrics[ticket.assignee_id].resolutionTimes.push(updatedAt - createdAt); // Time in milliseconds
+                }
+            }
+            if (statusName === 'Closed') { // Assuming 'Closed' is the status name for closed tickets
+                agentMetrics[ticket.assignee_id].closed++;
+                if (ticket.created_at && ticket.updated_at) { // Record resolution time for all closed tickets
+                    const createdAt = new Date(ticket.created_at).getTime();
+                    const updatedAt = new Date(ticket.updated_at).getTime();
+                    agentMetrics[ticket.assignee_id].resolutionTimes.push(updatedAt - createdAt); // Time in milliseconds
+                }
+            }
+        }
+    });
+
+    const result = Object.keys(agentMetrics).map(agentId => {
+        const metrics = agentMetrics[agentId];
+        const totalResolutionTime = metrics.resolutionTimes.reduce((sum, time) => sum + time, 0);
+        const averageResolutionTime = metrics.resolutionTimes.length > 0
+            ? totalResolutionTime / metrics.resolutionTimes.length
+            : null;
+
+        // Format average resolution time (e.g., in hours or days)
+        const formatTime = (ms: number | null): string | null => {
+            if (ms === null) return null;
+            const seconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+
+            if (days > 0) return `${days}d ${hours % 24}h`;
+            if (hours > 0) return `${hours}h ${minutes % 60}m`;
+            if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+            return `${seconds}s`;
+        };
+
+
+        return {
+            agent: agentNameMap.get(agentId) || 'Unknown Agent',
+            assigned: metrics.assigned,
+            resolved: metrics.resolved,
+            closed: metrics.closed,
+            average_resolution_time: formatTime(averageResolutionTime),
+        };
+    });
+
+    return result.sort((a, b) => a.agent.localeCompare(b.agent));
+}
+
+export async function fetchResolutionTimesBy(dimension: 'type' | 'priority' | 'agent'): Promise<{ dimension: string; average_resolution_time: string | null }[]> {
+     // Similar to agent performance, this is complex and best handled by a database function/view.
+     // Client-side fallback: Fetch all tickets and process.
+
+     const { data: ticketsData, error: ticketsError } = await supabase
+        .from('tickets')
+        .select('id, ticket_type_id, priority_id, assignee_id, status_id, created_at, updated_at');
+
+     const { data: typesData, error: typesError } = await supabase
+        .from('ticket_types')
+        .select('id, name');
+
+     const { data: prioritiesData, error: prioritiesError } = await supabase
+        .from('ticket_priorities')
+        .select('id, name');
+
+     const { data: agentsData, error: agentsError } = await supabase
+        .from('profiles')
+        .select('id, full_name')
+        .eq('role', 'agent');
+
+     const { data: statusesData, error: statusesError } = await supabase
+        .from('ticket_statuses')
+        .select('id, name');
+
+
+     if (ticketsError) { console.error('Error fetching tickets for resolution time:', ticketsError.message); throw ticketsError; }
+     if (typesError) { console.error('Error fetching ticket types for resolution time:', typesError.message); throw typesError; }
+     if (prioritiesError) { console.error('Error fetching priorities for resolution time:', prioritiesError.message); throw prioritiesError; }
+     if (agentsError) { console.error('Error fetching agents for resolution time:', agentsError.message); throw agentsError; }
+     if (statusesError) { console.error('Error fetching statuses for resolution time:', statusesError.message); throw statusesError; }
+
+     if (!ticketsData || !typesData || !prioritiesData || !agentsData || !statusesData) return [];
+
+     const statusNameMap = new Map(statusesData.map(s => [s.id, s.name]));
+     const typeNameMap = new Map(typesData.map(t => [t.id, t.name]));
+     const priorityNameMap = new Map(prioritiesData.map(p => [p.id, p.name]));
+     const agentNameMap = new Map(agentsData.map(a => [a.id, a.full_name || 'Unknown Agent']));
+
+
+     const resolutionTimes: { [key: string]: number[] } = {};
+
+     ticketsData.forEach(ticket => {
+         const statusName = statusNameMap.get(ticket.status_id);
+         // Only consider tickets that have been resolved or closed after being resolved
+         if (statusName === 'Resolved' || statusName === 'Closed') {
+             if (ticket.created_at && ticket.updated_at) {
+                 const createdAt = new Date(ticket.created_at).getTime();
+                 const updatedAt = new Date(ticket.updated_at).getTime();
+                 const duration = updatedAt - createdAt; // Time in milliseconds
+
+                 let key: string | null | undefined;
+                 switch (dimension) {
+                     case 'type':
+                         key = ticket.ticket_type_id ? typeNameMap.get(ticket.ticket_type_id) : 'Unknown Type';
+                         break;
+                     case 'priority':
+                         key = ticket.priority_id ? priorityNameMap.get(ticket.priority_id) : 'Unknown Priority';
+                         break;
+                     case 'agent':
+                         key = ticket.assignee_id ? agentNameMap.get(ticket.assignee_id) : 'Unassigned';
+                         break;
+                 }
+
+                 if (key !== undefined && key !== null) {
+                     if (!resolutionTimes[key]) {
+                         resolutionTimes[key] = [];
+                     }
+                     resolutionTimes[key].push(duration);
+                 }
+             }
+         }
+     });
+
+     const result = Object.keys(resolutionTimes).map(key => {
+         const times = resolutionTimes[key];
+         const totalTime = times.reduce((sum, time) => sum + time, 0);
+         const averageTime = times.length > 0 ? totalTime / times.length : null;
+
+         const formatTime = (ms: number | null): string | null => {
+            if (ms === null) return null;
+            const seconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+
+            if (days > 0) return `${days}d ${hours % 24}h`;
+            if (hours > 0) return `${hours}h ${minutes % 60}m`;
+            if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+            return `${seconds}s`;
+        };
+
+         return {
+             dimension: key,
+             average_resolution_time: formatTime(averageTime),
+         };
+     });
+
+     return result.sort((a, b) => a.dimension.localeCompare(b.dimension));
+}
+
+export async function fetchCustomerTicketCounts(): Promise<{ customer: string; ticket_count: number }[]> {
+    // Requires grouping by requester_id and joining with profiles.
+    // Best handled by a database function/view.
+    // Client-side fallback: Fetch all tickets and profiles and process.
+
+    const { data: ticketsData, error: ticketsError } = await supabase
+        .from('tickets')
+        .select('id, requester_id');
+
+    const { data: profilesData, error: profilesError } = await supabase
+        .from('profiles')
+        .select('id, full_name');
+
+    if (ticketsError) { console.error('Error fetching tickets for customer report:', ticketsError.message); throw ticketsError; }
+    if (profilesError) { console.error('Error fetching profiles for customer report:', profilesError.message); throw profilesError; }
+
+    if (!ticketsData || !profilesData) return [];
+
+    const profileNameMap = new Map(profilesData.map(p => [p.id, p.full_name || 'Unknown Customer']));
+    const ticketCounts: { [customerId: string]: number } = {};
+
+    ticketsData.forEach(ticket => {
+        const customerId = ticket.requester_id;
+        ticketCounts[customerId] = (ticketCounts[customerId] || 0) + 1;
+    });
+
+    const result = Object.keys(ticketCounts).map(customerId => ({
+        customer: profileNameMap.get(customerId) || `Unknown Customer (${customerId})`,
+        ticket_count: ticketCounts[customerId],
+    }));
+
+    return result.sort((a, b) => a.customer.localeCompare(b.customer));
+}
+
+export async function fetchOverallAverageResolutionTime(): Promise<string | null> {
+    // Fetch tickets that are either 'Resolved' or 'Closed'
+    const { data: ticketsData, error: ticketsError } = await supabase
+        .from('tickets')
+        .select('created_at, updated_at, status_id');
+
+    const { data: statusesData, error: statusesError } = await supabase
+        .from('ticket_statuses')
+        .select('id, name');
+
+    if (ticketsError) {
+        console.error('Error fetching tickets for overall average resolution time:', ticketsError.message);
+        throw ticketsError;
+    }
+    if (statusesError) {
+        console.error('Error fetching statuses for overall average resolution time:', statusesError.message);
+        throw statusesError;
+    }
+
+    if (!ticketsData || !statusesData) return null;
+
+    const statusNameMap = new Map(statusesData.map(s => [s.id, s.name]));
+    const resolutionTimes: number[] = [];
+
+    ticketsData.forEach(ticket => {
+        const statusName = statusNameMap.get(ticket.status_id);
+        if ((statusName === 'Resolved' || statusName === 'Closed') && ticket.created_at && ticket.updated_at) {
+            const createdAt = new Date(ticket.created_at).getTime();
+            const updatedAt = new Date(ticket.updated_at).getTime();
+            resolutionTimes.push(updatedAt - createdAt); // Time in milliseconds
+        }
+    });
+
+    const totalResolutionTime = resolutionTimes.reduce((sum, time) => sum + time, 0);
+    const averageResolutionTime = resolutionTimes.length > 0
+        ? totalResolutionTime / resolutionTimes.length
+        : null;
+
+    const formatTime = (ms: number | null): string | null => {
+        if (ms === null) return null;
+        const seconds = Math.floor(ms / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+
+        if (days > 0) return `${days}d ${hours % 24}h`;
+        if (hours > 0) return `${hours}h ${minutes % 60}m`;
+        if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+        return `${seconds}s`;
+    };
+
+    return formatTime(averageResolutionTime);
+}
+
+
 export async function createTicketType(newTicketType: { name: string; description?: string | null }): Promise<TicketType | null> {
     const { data, error } = await supabase.from('ticket_types').insert(newTicketType).select('id, name, description').single();
     if (error) { console.error('Error creating ticket type:', error.message); throw error; }
@@ -342,8 +842,29 @@ export async function uploadAvatar(userId: string, file: File): Promise<string> 
 
 export function getAvatarPublicUrl(filePath: string): string | null {
     if (!filePath) return null;
+
+    // Attempt to get the public URL using Supabase SDK
     const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
-    return data?.publicUrl || null;
+
+    // If SDK method returns a public URL, use it
+    if (data?.publicUrl) {
+        return data.publicUrl;
+    }
+
+    // Fallback: Manually construct the public URL if SDK method fails
+    // This might be necessary in some local development setups
+    if (supabaseUrl) {
+        // Ensure filePath doesn't start with a slash if bucket name is included
+        const cleanedFilePath = filePath.startsWith('/') ? filePath.substring(1) : filePath;
+        // Construct the URL: [SUPABASE_URL]/storage/v1/object/public/[BUCKET_NAME]/[FILE_PATH]
+        const manualUrl = `${supabaseUrl}/storage/v1/object/public/avatars/${cleanedFilePath}`;
+        console.warn(`Supabase getPublicUrl failed for ${filePath}. Using manual fallback URL: ${manualUrl}`);
+        return manualUrl;
+    }
+
+    // If both methods fail, return null
+    console.error(`Failed to get public URL for ${filePath}. Supabase URL not available for manual construction.`);
+    return null;
 }
 
 export async function fetchUserNotifications(userId: string, limit: number = 10, onlyUnread: boolean = false): Promise<Notification[]> {
@@ -522,7 +1043,8 @@ export async function fetchKBArticles(
     if (options?.searchQuery && options.searchQuery.trim() !== "") {
         const searchTerm = `%${options.searchQuery.trim()}%`;
         query = query.or(
-            `title.ilike.<span class="math-inline">\{searchTerm\},content\.ilike\.</span>{searchTerm},tags.cs.{${options.searchQuery.trim()}}`
+`title.ilike.${searchTerm},content.ilike.${searchTerm},tags.cs.{${options.searchQuery.trim()
+   .replace(/[,{}]/g,'')}}`
         );
     }
     // ... (other filters and ordering) ...
@@ -530,10 +1052,11 @@ export async function fetchKBArticles(
     if (options?.limit) {
         query = query.limit(options.limit);
     }
-    if (options?.offset) {
-        query = query.range(options.offset, options.offset + (options.limit || 10) - 1);
-    }
 
+    if (options?.offset !== undefined) {
+        query = query.range(options.offset,
+                            options.offset + (options.limit || 10) - 1);
+    }
     const { data, error, count } = await query;
     console.log("fetchKBArticles - Raw Supabase data:", data);
     console.log("fetchKBArticles - Supabase error:", error);

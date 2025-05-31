@@ -48,7 +48,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { toast, useToast } from "@/components/ui/use-toast";
+import { useToast } from "@/components/ui/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -244,7 +244,24 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
 
   const handleNavClick = (item: string) => {
     setActiveNavItem(item);
-    showToast({ description: `Navigated to ${item}` });
+    // Map item names to routes
+    const routes: { [key: string]: string } = {
+      dashboard: '/dashboard',
+      tickets: '/tickets',
+      reports: '/reports',
+      users: '/users',
+      automations: '/automations',
+      knowledge: '/knowledge-base',
+      settings: '/settings',
+    };
+    const route = routes[item];
+    if (route) {
+      router.push(route);
+    } else {
+      // Optional: Handle unknown items, maybe show a toast or log a warning
+      console.warn(`Unknown navigation item: ${item}`);
+      showToast({ description: `Navigation for ${item} is not yet implemented.` });
+    }
   };
 
   const handleCreateTicketSubmit = async (formData: { subject: string; description: string; priorityId: string; ticketTypeId: string }) => { // Added ticketTypeId
@@ -482,7 +499,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
                     onClick={() => handleNavClick(item.name)}
                   >
                     <item.icon size={20} />
-                    <span className="sr-only">{item.label}</span>
+                    <span className="sr-only">Navigation for {item.label}</span>
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="right">{item.label}</TooltipContent>
@@ -561,7 +578,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
         </div>
 
         
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-y-auto">
           
           <div className="flex flex-1 overflow-hidden">
             
@@ -572,12 +589,11 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
                   <h2 className="text-lg font-semibold">Ticket Views</h2>
                   <Dialog open={newTicketOpen} onOpenChange={setNewTicketOpen}>
                     <DialogTrigger asChild>
-                      {/* Allow admin, agent, or customer to create tickets */}
-                      <Button 
-                        size="sm" 
+                      <Button
+                        size="sm"
                         disabled={!(isAdmin || isAgent || profile?.role === 'customer') || isProfileLoading}
-                      > 
-                        <Plus size={16} className="mr-1.5" /> New 
+                      >
+                        <Plus size={16} className="mr-1.5" /> New
                       </Button>
                     </DialogTrigger>
                     <DialogContent className="sm:max-w-[480px]">
@@ -607,27 +623,27 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
             )}
 
             
-            <main className="flex-1 flex flex-col overflow-y-auto p-4 md:p-6"> {/* Changed overflow-hidden to overflow-y-auto */}
+            <main className="flex-1 flex flex-col overflow-y-auto p-4 md:p-6 pb-20 w-full"> {/* Changed overflow-hidden to overflow-y-auto */}
               
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-4 flex-wrap">
                 <h1 className="text-2xl font-semibold"> {selectedStatusFilter === "all" ? "All Tickets" : `${selectedStatusFilter} Tickets`} </h1>
                 <div className="flex items-center gap-2">
                   <div className="relative w-full max-w-xs"> <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" /> <Input type="search" placeholder="Search tickets..." className="pl-9" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /> </div>
-                  {isMobile && (
-                    <Sheet open={showMobileFilters} onOpenChange={setShowMobileFilters}>
-                        <SheetTrigger asChild> <Button variant="outline" size="icon"><Filter size={18}/></Button> </SheetTrigger>
-                        <SheetContent side="right" className="w-[300px]">
-                            <SheetHeader><SheetTitle>Filter Tickets</SheetTitle></SheetHeader>
-                             <div className="py-6">
-                                <h3 className="text-sm font-medium mb-3">Status</h3>
-                                <div className="space-y-2">
-                                 <Button variant={selectedStatusFilter === "all" ? "secondary" : "ghost"} size="sm" className="w-full justify-start" onClick={() => {setSelectedStatusFilter("all"); setShowMobileFilters(false);}}> All Tickets <Badge variant="outline" className="ml-auto">{tickets.length}</Badge> </Button>
-                                  {statuses.map((status) => ( <Button key={status.id} variant={selectedStatusFilter === status.name ? "secondary" : "ghost"} size="sm" className="w-full justify-start" onClick={() => {setSelectedStatusFilter(status.name); setShowMobileFilters(false);}}> {status.name} <Badge variant="outline" className="ml-auto">{statusCounts[status.name] || 0}</Badge> </Button> ))}
-                                </div>
-                             </div>
-                        </SheetContent>
-                    </Sheet>
-                  )}
+                  <Sheet open={showMobileFilters} onOpenChange={setShowMobileFilters}>
+                      <SheetTrigger asChild>
+                          {isMobile && <Button variant="outline" size="icon"><Filter size={18}/></Button>}
+                      </SheetTrigger>
+                      <SheetContent side="right" className="w-[300px]">
+                          <SheetHeader><SheetTitle>Filter Tickets</SheetTitle></SheetHeader>
+                           <div className="py-6">
+                              <h3 className="text-sm font-medium mb-3">Status</h3>
+                              <div className="space-y-2">
+                               <Button variant={selectedStatusFilter === "all" ? "secondary" : "ghost"} size="sm" className="w-full justify-start" onClick={() => {setSelectedStatusFilter("all"); setShowMobileFilters(false);}}> All Tickets <Badge variant="outline" className="ml-auto">{tickets.length}</Badge> </Button>
+                                {statuses.map((status) => ( <Button key={status.id} variant={selectedStatusFilter === status.name ? "secondary" : "ghost"} size="sm" className="w-full justify-start" onClick={() => {setSelectedStatusFilter(status.name); setShowMobileFilters(false);}}> {status.name} <Badge variant="outline" className="ml-auto">{statusCounts[status.name] || 0}</Badge> </Button> ))}
+                              </div>
+                           </div>
+                      </SheetContent>
+                  </Sheet>
                 </div>
               </div>
 
@@ -644,7 +660,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
                     const currentPriority = ticket.ticket_priorities;
                     const currentProfile = ticket.profiles;
                     return (
-                      <Card key={ticket.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleTicketSelect(ticket)}>
+                      <Card key={ticket.id} className="hover:shadow-md transition-shadow cursor-pointer mb-4" onClick={() => handleTicketSelect(ticket)}>
                         <CardHeader>
                           <div className="flex justify-between items-start gap-2">
                             <div className="flex-1 min-w-0">
@@ -661,9 +677,9 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
                         </CardHeader>
                         <CardContent className="pt-0 pb-4">
                           <p className="text-sm text-muted-foreground line-clamp-2 mb-3"> {ticket.description} </p>
-                          <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between text-xs text-muted-foreground">
                             {currentPriority && <Badge variant="outline" className="capitalize py-0.5 px-1.5 font-normal">{currentPriority.name}</Badge>}
-                            <span>Last update: <ClientOnlyDateTime dateString={ticket.created_at} options={{ dateStyle: 'short', timeStyle: 'short' }} /></span> 
+                            <span>Last update: <ClientOnlyDateTime dateString={ticket.created_at} options={{ dateStyle: 'short', timeStyle: 'short' }} /></span>
                           </div>
                         </CardContent>
                       </Card>
@@ -674,7 +690,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
 
               {/* Pagination Controls */}
               {!isLoadingData && !dataError && totalTickets !== null && totalTickets > itemsPerPage && (
-                <div className="flex justify-center items-center space-x-4 mt-6">
+                <div className="flex justify-center items-center space-x-2 sm:space-x-4 mt-6">
                   <Button
                     variant="outline"
                     onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
@@ -730,7 +746,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
                                         {comments.filter(comment => !comment.is_internal_note || isAgent).map(comment => ( // Filter internal notes for non-agents
                                             <div key={comment.id} className={`flex items-start space-x-3 ${comment.is_internal_note ? 'p-2 bg-amber-50 border border-amber-200 rounded-md' : ''}`}>
                                                 <Avatar className="h-8 w-8">
-                                                    <AvatarImage src={comment.profiles?.avatar_url || undefined} alt={comment.profiles?.full_name || 'User'} />
+                                                <AvatarImage src={comment.profiles?.avatar_url ? getAvatarPublicUrl(comment.profiles.avatar_url) || undefined : undefined} alt={comment.profiles?.full_name || 'User'} />
                                                     <AvatarFallback>{comment.profiles?.full_name?.[0]?.toUpperCase() || 'U'}</AvatarFallback>
                                                 </Avatar>
                                                 <div className="flex-1">
@@ -854,7 +870,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
                                     {selectedTicketDetail.assignee_profile && (
                                         <div className="mt-2 flex items-center text-xs text-muted-foreground">
                                             <Avatar className="h-5 w-5 mr-1.5">
-                                                <AvatarImage src={selectedTicketDetail.assignee_profile.avatar_url || undefined} />
+                                                <AvatarImage src={selectedTicketDetail.assignee_profile.avatar_url ? getAvatarPublicUrl(selectedTicketDetail.assignee_profile.avatar_url) || undefined : undefined} />
                                                 <AvatarFallback>{selectedTicketDetail.assignee_profile.full_name?.[0]?.toUpperCase() || 'A'}</AvatarFallback>
                                             </Avatar>
                                             Assigned to: {selectedTicketDetail.assignee_profile.full_name || 'N/A'}
@@ -873,7 +889,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
               <DialogFooter className="mt-auto pt-4 border-t">
                  <AlertDialog>
                     <AlertDialogTrigger asChild>
-                        {(isAgent || isAdmin) && <Button variant="destructive" disabled={isUpdatingTicket || isProfileLoading}>Delete Ticket</Button>}
+                        <Button variant="destructive" disabled={!(isAgent || isAdmin) || isUpdatingTicket || isProfileLoading}>{(isAgent || isAdmin) && "Delete Ticket"}</Button>
                     </AlertDialogTrigger>
                     <AlertDialogContent>
                         <AlertDialogHeader>
@@ -924,6 +940,7 @@ const NewTicketForm: React.FC<NewTicketFormProps> = ({ onSubmit, priorities, tic
   });
   const [ticketTypeId, setTicketTypeId] = useState<string>(ticketTypes.length > 0 ? String(ticketTypes[0].id) : ''); // Added
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const { toast: showToast } = useToast(); // Use showToast from the hook
 
   useEffect(() => {
     if (!priorityId && priorities.length > 0) {
@@ -939,11 +956,11 @@ const NewTicketForm: React.FC<NewTicketFormProps> = ({ onSubmit, priorities, tic
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!priorityId) {
-        toast({ title: "Missing Field", description: "Please select a priority.", variant: "destructive"});
+        showToast({ title: "Missing Field", description: "Please select a priority.", variant: "destructive"});
         return;
     }
     if (!ticketTypeId) { // Added check for ticketTypeId
-        toast({ title: "Missing Field", description: "Please select a ticket type.", variant: "destructive"});
+        showToast({ title: "Missing Field", description: "Please select a ticket type.", variant: "destructive"});
         return;
     }
     setIsSubmitting(true);

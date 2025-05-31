@@ -12,6 +12,7 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "HelpDesk - Ticket Management",
   description: "A ticket management system for customer support",
+  authors: { name: "Benouari Badr-Eddine" },
 };
 
 export default function RootLayout({
