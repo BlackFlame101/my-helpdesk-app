@@ -59,12 +59,25 @@ function chunkArticleContent(articleId, title, content) {
       
       // Split if paragraph is too long
       if (chunkText.length > MAX_CHUNK_LENGTH_CHARS) {
-        // Split by sentences to maintain context better
-        const sentences = chunkText.match(/[^.!?]+[.!?]+/g) || [chunkText];
+        // Split by sentences, including those without terminal punctuation
+        const sentences = chunkText.match(/[^.!?]+(?:[.!?]+|$)/g) || [];
+        
+        // Handle the case where regex didn't match (e.g., very short text)
+        if (sentences.length === 0 && chunkText.trim().length > 0) {
+          sentences.push(chunkText.trim());
+        }
+        
         let currentChunk = '';
         
-        for (const sentence of sentences) {
+        for (let i = 0; i < sentences.length; i++) {
+          const sentence = sentences[i].trim();
+          const isLastSentence = i === sentences.length - 1;
+          
+          // Skip empty sentences
+          if (sentence.length === 0) continue;
+          
           if ((currentChunk + sentence).length > MAX_CHUNK_LENGTH_CHARS) {
+            // Store current chunk if it meets minimum length
             if (currentChunk.length > MIN_CHUNK_LENGTH_CHARS) {
               chunks.push({
                 kb_article_id: articleId,
@@ -73,15 +86,20 @@ function chunkArticleContent(articleId, title, content) {
             }
             currentChunk = sentence;
           } else {
+            // Add space between sentences unless it's the first sentence in the chunk
+            if (currentChunk.length > 0) {
+              currentChunk += ' ';
+            }
             currentChunk += sentence;
           }
-        }
-        
-        if (currentChunk.length > MIN_CHUNK_LENGTH_CHARS) {
-          chunks.push({
-            kb_article_id: articleId,
-            content_chunk: currentChunk.trim(),
-          });
+          
+          // Handle the last sentence or chunk
+          if (isLastSentence && currentChunk.length > MIN_CHUNK_LENGTH_CHARS) {
+            chunks.push({
+              kb_article_id: articleId,
+              content_chunk: currentChunk.trim(),
+            });
+          }
         }
       } else if (chunkText.length > MIN_CHUNK_LENGTH_CHARS) {
         chunks.push({
@@ -100,10 +118,22 @@ function chunkArticleContent(articleId, title, content) {
     }
     
     if (chunkText.length > MAX_CHUNK_LENGTH_CHARS) {
-      const sentences = chunkText.match(/[^.!?]+[.!?]+/g) || [chunkText];
+      // Use the same improved sentence splitting logic
+      const sentences = chunkText.match(/[^.!?]+(?:[.!?]+|$)/g) || [];
+      
+      // Handle the case where regex didn't match
+      if (sentences.length === 0 && chunkText.trim().length > 0) {
+        sentences.push(chunkText.trim());
+      }
+      
       let currentChunk = '';
       
-      for (const sentence of sentences) {
+      for (let i = 0; i < sentences.length; i++) {
+        const sentence = sentences[i].trim();
+        const isLastSentence = i === sentences.length - 1;
+        
+        if (sentence.length === 0) continue;
+        
         if ((currentChunk + sentence).length > MAX_CHUNK_LENGTH_CHARS) {
           if (currentChunk.length > MIN_CHUNK_LENGTH_CHARS) {
             chunks.push({
@@ -113,15 +143,18 @@ function chunkArticleContent(articleId, title, content) {
           }
           currentChunk = sentence;
         } else {
+          if (currentChunk.length > 0) {
+            currentChunk += ' ';
+          }
           currentChunk += sentence;
         }
-      }
-      
-      if (currentChunk.length > MIN_CHUNK_LENGTH_CHARS) {
-        chunks.push({
-          kb_article_id: articleId,
-          content_chunk: currentChunk.trim(),
-        });
+        
+        if (isLastSentence && currentChunk.length > MIN_CHUNK_LENGTH_CHARS) {
+          chunks.push({
+            kb_article_id: articleId,
+            content_chunk: currentChunk.trim(),
+          });
+        }
       }
     } else {
       chunks.push({

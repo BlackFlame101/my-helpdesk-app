@@ -134,6 +134,7 @@ export default function ChatbotWindow() {
 
                                             {/* Support ticket link */}
                                             {msg.role === 'assistant' && 
+                                             typeof msg.content === 'string' &&
                                              msg.content.toLowerCase().includes("create a support ticket") && (
                                                 <Button
                                                     variant="link"

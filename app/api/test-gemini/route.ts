@@ -8,8 +8,9 @@ export async function GET() {
     console.log("Testing Gemini API connection...");
     
     if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+      console.error("Missing API key configuration");
       return Response.json(
-        { error: 'GOOGLE_GENERATIVE_AI_API_KEY environment variable is not set' }, 
+        { success: false, message: 'Service configuration error' }, 
         { status: 500 }
       );
     }
@@ -33,17 +34,21 @@ export async function GET() {
     });
 
   } catch (error: any) {
-    console.error("Gemini API test failed:", error);
+    // Log detailed error information server-side
+    console.error("Gemini API test failed:", {
+      name: error.name,
+      message: error.message,
+      status: error.status,
+      cause: error.cause,
+      stack: error.stack
+    });
     
+    // Return a generic error message to the client
     return Response.json({
       success: false,
-      error: error.message || 'Unknown error',
-      details: {
-        name: error.name,
-        message: error.message,
-        status: error.status,
-        cause: error.cause
-      }
-    }, { status: 500 });
+      message: 'An error occurred while testing the API connection'
+    }, { 
+      status: error.status === 401 ? 401 : 500 // Only preserve 401 status for auth errors
+    });
   }
 }

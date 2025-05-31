@@ -496,7 +496,7 @@ export async function fetchAgentPerformance(): Promise<{ agent: string; assigned
     return result.sort((a, b) => a.agent.localeCompare(b.agent));
 }
 
-export async function fetchResolutionTimesBy(dimension: 'type' | 'priority' | 'agent'): Promise<{ dimension: string; average_resolution_time: string | null }[]> {
+export async function fetchResolutionTimesBy(dimension: 'type' | 'priority' | 'agent'): Promise<{ dimension: string; average_resolution_time: string | null; average_resolution_minutes: number | null }[]> {
      // Similar to agent performance, this is complex and best handled by a database function/view.
      // Client-side fallback: Fetch all tickets and process.
 
@@ -591,6 +591,7 @@ export async function fetchResolutionTimesBy(dimension: 'type' | 'priority' | 'a
          return {
              dimension: key,
              average_resolution_time: formatTime(averageTime),
+             average_resolution_minutes: averageTime ? Math.round(averageTime / (1000 * 60)) : null, // Convert ms to minutes
          };
      });
 
@@ -1038,16 +1039,34 @@ export async function fetchKBArticles(
 ): Promise<{ articles: KBArticle[], count: number | null }> { // Ensure this return type is here
     let query = supabase.from('kb_articles').select(KB_ARTICLE_SELECT_QUERY, { count: 'exact' });
 
-    // ... (your existing filter logic) ...
-
     if (options?.searchQuery && options.searchQuery.trim() !== "") {
-        const searchTerm = `%${options.searchQuery.trim()}%`;
-        query = query.or(
-`title.ilike.${searchTerm},content.ilike.${searchTerm},tags.cs.{${options.searchQuery.trim()
-   .replace(/[,{}]/g,'')}}`
-        );
+        const searchTerm = options.searchQuery.trim();
+        
+        if (searchTerm.includes(',')) {
+            // If search term contains commas, treat it exclusively as a tag search
+            const searchTags = searchTerm.split(',').map(tag => tag.trim()).filter(Boolean);
+            // Use overlaps operator for any tag match
+            query = query.overlaps('tags', searchTags);
+        } else {
+            // If no commas, treat it as a text search only
+            // Properly escape the search term for ilike
+            const escapedSearchTerm = searchTerm.replace(/[\\_%]/g, '\\$&');
+            query = query.or(
+                `title.ilike.%${escapedSearchTerm}%,content.ilike.%${escapedSearchTerm}%`
+            );
+        }
     }
-    // ... (other filters and ordering) ...
+
+    if (options?.categoryId) {
+        query = query.eq('category_id', options.categoryId);
+    }
+
+    if (options?.publishedOnly) {
+        query = query.eq('is_published', true);
+    }
+
+    // Add default ordering
+    query = query.order('created_at', { ascending: false });
 
     if (options?.limit) {
         query = query.limit(options.limit);

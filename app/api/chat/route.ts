@@ -13,11 +13,19 @@ if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) 
   throw new Error('Missing Supabase environment variables.');
 }
 
-// Initialize Supabase client
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+// Function to get a new Supabase client with service role
+function getSupabaseSrv() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_KEY!,
+    {
+      auth: {
+        persistSession: false, // Ensure sessions aren't persisted
+        autoRefreshToken: false // Disable auto token refresh
+      }
+    }
+  );
+}
 
 export const runtime = 'edge';
 
@@ -28,6 +36,9 @@ const embeddingModel = google.textEmbedding('embedding-001');
 async function performSemanticSearch(query: string, limit: number = 5): Promise<string> {
   try {
     console.log('Starting semantic search for query:', query);
+    
+    // Get a new Supabase client instance
+    const supabase = getSupabaseSrv();
     
     // Generate embedding for the query
     console.log('Generating embedding for query using model:', embeddingModel);
