@@ -3,7 +3,13 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext'; // Adjust path
 import { useRouter } from 'next/navigation';
-import { createTicket, fetchTicketPriorities, PriorityOption } from '@/lib/dataService'; // Adjust path
+import { 
+  createTicket, 
+  fetchTicketPriorities, 
+  fetchTicketTypes,
+  PriorityOption,
+  TicketType 
+} from '@/lib/dataService'; // Adjust path
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,8 +29,10 @@ export default function NewTicketPage() {
 
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
-  const [priorityId, setPriorityId] = useState<string>(''); // Store as string for Select component
+  const [priorityId, setPriorityId] = useState<string>('');
+  const [ticketTypeId, setTicketTypeId] = useState<string>('');
   const [priorities, setPriorities] = useState<PriorityOption[]>([]);
+  const [ticketTypes, setTicketTypes] = useState<TicketType[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,27 +44,47 @@ export default function NewTicketPage() {
   }, [session, authLoading, router]);
 
   useEffect(() => {
-    const loadPriorities = async () => {
+    const ac = new AbortController();
+    let mounted = true;
+    
+    (async () => {
       try {
-        const fetchedPriorities = await fetchTicketPriorities();
-        setPriorities(fetchedPriorities);
-        if (fetchedPriorities.length > 0) {
-          // Find 'Normal' priority or default to the first one
-          const normalPriority = fetchedPriorities.find(p => p.name.toLowerCase() === 'normal');
-          setPriorityId(normalPriority ? String(normalPriority.id) : String(fetchedPriorities[0].id));
-        }
-      } catch (err) {
-        console.error("Failed to load priorities:", err);
-        toast({
-          title: "Error",
-          description: "Could not load ticket priorities.",
-          variant: "destructive",
-        });
-      }
-    };
-    loadPriorities();
-  }, [toast]);
+        const [fetchedPriorities, fetchedTypes] = await Promise.all([
+          fetchTicketPriorities(),
+          fetchTicketTypes()
+        ]);
 
+        // Only update state if component is still mounted
+        if (mounted) {
+          setPriorities(fetchedPriorities);
+          setTicketTypes(fetchedTypes);
+
+          // Set default values if available
+          if (fetchedPriorities.length > 0) {
+            const normalPriority = fetchedPriorities.find(p => p.name.toLowerCase() === 'normal');
+            setPriorityId(normalPriority ? String(normalPriority.id) : String(fetchedPriorities[0].id));
+          }
+          if (fetchedTypes.length > 0) {
+            setTicketTypeId(String(fetchedTypes[0].id));
+          }
+        }
+      } catch (err: any) {
+        if (mounted) {
+          console.error("Failed to load form data:", err);
+          toast({
+            title: "Error",
+            description: "Could not load form data.",
+            variant: "destructive",
+          });
+        }
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      ac.abort(); // Abort any pending requests
+    };
+  }, []); // Empty dependency array → run once on mount
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -65,9 +93,14 @@ export default function NewTicketPage() {
       return;
     }
     if (!priorityId) {
-        setError("Please select a priority.");
-        toast({ title: "Missing Field", description: "Please select a priority.", variant: "destructive"});
-        return;
+      setError("Please select a priority.");
+      toast({ title: "Missing Field", description: "Please select a priority.", variant: "destructive"});
+      return;
+    }
+    if (!ticketTypeId) {
+      setError("Please select a ticket type.");
+      toast({ title: "Missing Field", description: "Please select a ticket type.", variant: "destructive"});
+      return;
     }
 
     setIsLoading(true);
@@ -77,9 +110,10 @@ export default function NewTicketPage() {
       const newTicketData = {
         subject,
         description,
-        priority_id: parseInt(priorityId, 10), // Convert string ID to number
+        priority_id: parseInt(priorityId, 10),
         requester_id: user.id,
-        status_id: DEFAULT_OPEN_STATUS_ID, // Set default status to 'Open'
+        status_id: DEFAULT_OPEN_STATUS_ID,
+        ticket_type_id: parseInt(ticketTypeId, 10)
       };
 
       const created = await createTicket(newTicketData);
@@ -136,25 +170,48 @@ export default function NewTicketPage() {
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="priority">Priority</Label>
-              <Select
-                value={priorityId}
-                onValueChange={setPriorityId}
-                required
-                disabled={isLoading || priorities.length === 0}
-              >
-                <SelectTrigger id="priority">
-                  <SelectValue placeholder="Select priority..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {priorities.map((p) => (
-                    <SelectItem key={p.id} value={String(p.id)}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="priority">Priority</Label>
+                <Select
+                  value={priorityId}
+                  onValueChange={setPriorityId}
+                  required
+                  disabled={isLoading || priorities.length === 0}
+                >
+                  <SelectTrigger id="priority">
+                    <SelectValue placeholder="Select priority..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {priorities.map((p) => (
+                      <SelectItem key={p.id} value={String(p.id)}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="ticket-type">Ticket Type</Label>
+                <Select
+                  value={ticketTypeId}
+                  onValueChange={setTicketTypeId}
+                  required
+                  disabled={isLoading || ticketTypes.length === 0}
+                >
+                  <SelectTrigger id="ticket-type">
+                    <SelectValue placeholder="Select type..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ticketTypes.map((type) => (
+                      <SelectItem key={type.id} value={String(type.id)}>
+                        {type.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
             <div className="space-y-2">

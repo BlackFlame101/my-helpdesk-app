@@ -1,22 +1,28 @@
-// app/knowledge-base/search/page.tsx
 "use client";
 
 import React, { useState, useEffect, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { useAuth } from '@/contexts/AuthContext';
 import { fetchKBArticles, KBArticle } from '@/lib/dataService';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input"; // For a search bar on this page too
-import { Loader2, AlertTriangle, Search as SearchIcon, ListChecks, ChevronRight, Home, BookText, TagIcon, ChevronLeft } from 'lucide-react';
+import { Loader2, AlertTriangle, Search as SearchIcon, TagIcon, BookText } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
-import ClientOnlyDateTime from '@/components/ClientOnlyDateTime'; // Assuming this is in components folder
+import ClientOnlyDateTime from '@/components/ClientOnlyDateTime';
 import { Badge } from '@/components/ui/badge';
+import { remark } from 'remark';
+import stripMarkdown from 'strip-markdown';
 
-// Define a component to handle the actual search logic and display
-// This is to allow useSearchParams to be used within a Suspense boundary if needed,
-// though for client components, direct use is fine.
+// Utility function to safely strip markdown content
+const stripMarkdownContent = (content: string): string => {
+    const processedContent = remark()
+        .use(stripMarkdown)
+        .processSync(content)
+        .toString()
+        .trim();
+    return processedContent;
+};
+
 function SearchResultsDisplay() {
     const router = useRouter();
     const searchParams = useSearchParams();
@@ -29,7 +35,7 @@ function SearchResultsDisplay() {
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [currentPage, setCurrentPage] = useState(1);
-    const articlesPerPage = 10; // Or make this configurable
+    const articlesPerPage = 10;
 
     const loadSearchResults = useCallback(async (searchTerm: string, page: number) => {
         setIsLoading(true);
@@ -53,13 +59,21 @@ function SearchResultsDisplay() {
         }
     }, [toast, articlesPerPage]);
 
+    // Reset currentPage when query changes
     useEffect(() => {
-        if (query) {
-            loadSearchResults(query, currentPage);
+        if (query !== null) {
+            setCurrentPage(1);
         } else {
             setArticles([]);
             setTotalCount(0);
             setIsLoading(false);
+        }
+    }, [query]);
+
+    // Load search results when either query or currentPage changes
+    useEffect(() => {
+        if (query) {
+            loadSearchResults(query, currentPage);
         }
     }, [query, currentPage, loadSearchResults]);
 
@@ -69,19 +83,19 @@ function SearchResultsDisplay() {
 
     if (isLoading) {
         return (
-            <div className="flex flex-col items-center justify-center min-h-[calc(100vh-250px)]">
-                <Loader2 className="h-10 w-10 animate-spin text-primary mb-3" />
-                <p className="text-muted-foreground">Searching for articles...</p>
+            <div className="flex items-center justify-center min-h-[50vh]">
+                <Loader2 className="h-8 w-8 animate-spin" />
+                <p className="ml-2">Searching for articles...</p>
             </div>
         );
     }
 
     if (error) {
         return (
-            <div className="flex flex-col items-center justify-center min-h-[calc(100vh-250px)]">
-                <AlertTriangle className="h-10 w-10 text-destructive mb-3" />
+            <div className="flex flex-col items-center justify-center min-h-[50vh]">
+                <AlertTriangle className="h-12 w-12 text-destructive mb-4" />
                 <p className="text-destructive mb-3">Error: {error}</p>
-                <Button onClick={() => query && loadSearchResults(query, 1)} >Try Again</Button>
+                <Button onClick={() => query && loadSearchResults(query, 1)}>Try Again</Button>
             </div>
         );
     }
@@ -91,15 +105,19 @@ function SearchResultsDisplay() {
     return (
         <div>
             <header className="mb-8">
-                <h1 className="text-3xl font-bold tracking-tight text-foreground">
-                    Search Results for: "{query}"
-                </h1>
-                {totalCount !== null && (
-                    <p className="mt-2 text-muted-foreground">
-                        Found {totalCount} article{totalCount !== 1 ? 's' : ''}.
-                        {totalPages > 1 && ` (Page ${currentPage} of ${totalPages})`}
-                    </p>
-                )}
+                <div className="flex items-center justify-between mb-4">
+                    <h1 className="text-3xl font-bold">Search Results</h1>
+                    <Button variant="outline" size="sm" onClick={() => router.push('/knowledge-base')} className="text-sm group">
+                        <BookText size={16} className="mr-2 group-hover:text-primary"/> Back to Knowledge Base
+                    </Button>
+                </div>
+                <p className="mt-2 text-muted-foreground">
+                    {query && `Results for: "${query}"`}
+                    {totalCount !== null && (
+                        <> • Found {totalCount} article{totalCount !== 1 ? 's' : ''}.
+                        {totalPages > 1 && ` (Page ${currentPage} of ${totalPages})`}</>
+                    )}
+                </p>
             </header>
 
             {articles.length === 0 && !isLoading && (
@@ -131,9 +149,9 @@ function SearchResultsDisplay() {
                                 </CardHeader>
                                 <CardContent>
                                     <p className="text-sm text-muted-foreground line-clamp-3">
-                                        {article.content.substring(0, 250).replace(/<[^>]+>/g, '')}...
+                                        {stripMarkdownContent(article.content.substring(0, 400))}...
                                     </p>
-                                     {article.tags && article.tags.length > 0 && (
+                                    {article.tags && article.tags.length > 0 && (
                                         <div className="mt-3 flex flex-wrap gap-1.5">
                                             {article.tags.map(tag => (
                                                 <Badge key={tag} variant="secondary" className="font-normal text-xs">
@@ -153,7 +171,6 @@ function SearchResultsDisplay() {
                 </div>
             )}
 
-            {/* Pagination Controls */}
             {totalPages > 1 && (
                 <div className="mt-10 flex justify-center items-center space-x-2">
                     <Button
@@ -187,22 +204,17 @@ function SearchResultsDisplay() {
     );
 }
 
-
-// Main page component that uses Suspense for searchParams
 export default function KnowledgeBaseSearchPage() {
     return (
-        <div className="container mx-auto max-w-4xl py-8 px-4 sm:px-6 lg:px-8">
-             <div className="mb-6 flex justify-between items-center">
-                 <Button variant="outline" size="sm" onClick={() => window.history.back()} className="group text-sm">
-                    <ChevronLeft size={16} className="mr-1 group-hover:-translate-x-0.5 transition-transform"/> Back
-                </Button>
-                <Button variant="ghost" onClick={() => window.location.href = '/knowledge-base'} className="group text-sm">
-                    <BookText size={16} className="mr-2 group-hover:text-primary"/> Knowledge Base Home
-                </Button>
-            </div>
-            <Suspense fallback={<div className="flex justify-center items-center min-h-[200px]"><Loader2 className="h-8 w-8 animate-spin"/></div>}>
+        <div className="container mx-auto p-4 md:p-6 lg:p-8">
+            <Suspense fallback={
+                <div className="flex items-center justify-center min-h-screen">
+                    <Loader2 className="h-8 w-8 animate-spin" />
+                    <p className="ml-2">Loading...</p>
+                </div>
+            }>
                 <SearchResultsDisplay />
             </Suspense>
         </div>
     );
-}
+} 

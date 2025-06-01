@@ -249,6 +249,116 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   }, [safeSetProfileLoading]);
 
+  // First, declare setupNotificationChannel
+  const setupNotificationChannel = useCallback(async (userId: string) => {
+    if (!mountedRef.current) return;
+    
+    // Cleanup previous channel if it exists
+    if (notificationChannelRef.current) {
+      try {
+        await supabase.removeChannel(notificationChannelRef.current);
+      } catch (err) {
+        console.error('Error removing previous notification channel:', err);
+      }
+      notificationChannelRef.current = null;
+    }
+
+    if (!userId || !mountedRef.current) return;
+
+    try {
+      console.log(`Setting up notification channel for user ${userId}`);
+      
+      // Create a simple channel name with no special characters
+      const channelName = `notifications_${userId.replace(/-/g, '_')}`;
+      
+      // Create the channel
+      const channel = supabase
+        .channel(channelName)
+        .on(
+          'postgres_changes',
+          { 
+            event: 'INSERT', 
+            schema: 'public', 
+            table: 'notifications', 
+            filter: `user_id=eq.${userId}` 
+          },
+          (payload) => {
+            console.log('New notification received:', payload);
+            if (mountedRef.current) {
+              refreshUnreadCount();
+            }
+          }
+        );
+
+      // Subscribe to the channel
+      await channel.subscribe();
+      
+      console.log(`Subscribed to notifications for user ${userId}`);
+      if (mountedRef.current) {
+        notificationChannelRef.current = channel;
+      } else {
+        // If component unmounted during setup, immediately clean up
+        supabase.removeChannel(channel).catch(err => 
+          console.error("Error removing channel after unmount:", err)
+        );
+      }
+    } catch (error) {
+      console.error(`Error setting up notification channel for user ${userId}:`, error);
+      // Try to re-subscribe once on error after a delay
+      if (mountedRef.current) {
+        setTimeout(() => {
+          if (mountedRef.current && user?.id === userId) {
+            setupNotificationChannel(userId).catch(e => 
+              console.error("Notification channel retry failed:", e)
+            );
+          }
+        }, 5000);
+      }
+    }
+  }, [user?.id, refreshUnreadCount]);
+
+  // Then declare initializeUserAfterAuth which uses it
+  const initializeUserAfterAuth = useCallback(async (userId: string) => {
+    try {
+      await fetchUserProfileAndNotifications(userId);
+      // Ensure notification channel is set up
+      await setupNotificationChannel(userId);
+    } catch (error) {
+      console.error("Error initializing user after auth:", error);
+      throw error;
+    }
+  }, [fetchUserProfileAndNotifications, setupNotificationChannel]);
+
+  // Then add the notification channel effect
+  useEffect(() => {
+    const currentUserId = user?.id;
+    if (currentUserId) {
+      setupNotificationChannel(currentUserId);
+    }
+
+    return () => {
+      // Clean up timeouts
+      clearAllTimeouts();
+      
+      // Clean up notification channel synchronously
+      if (notificationChannelRef.current) {
+        try {
+          // Use Promise.resolve to handle both sync and async cases
+          Promise.resolve(supabase.removeChannel(notificationChannelRef.current))
+            .catch(error => {
+              console.error('Error removing notification channel on cleanup:', error);
+            })
+            .finally(() => {
+              notificationChannelRef.current = null;
+            });
+        } catch (error) {
+          console.error('Error initiating channel cleanup:', error);
+          notificationChannelRef.current = null;
+        }
+      }
+    };
+  }, [user?.id, setupNotificationChannel, clearAllTimeouts]);
+
   // Function to refresh auth state - can be called manually to reinitialize
   const refreshAuthState = useCallback(async () => {
     console.log("[Auth Debug] Starting refreshAuthState");
@@ -363,23 +473,22 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           console.log("[Auth Debug] Updated auth state:", { hasUser: !!newCurrentUser });
 
           if (newCurrentUser) {
-            if (newCurrentUser.id !== profile?.id || !profile) {
-              try {
-                console.log("[Auth Debug] Fetching profile for new user");
-                await fetchUserProfileAndNotifications(newCurrentUser.id);
-              } catch (profileError) {
-                console.error("[Auth Debug] Error fetching user profile on auth change:", profileError);
-                safeSetProfileLoading(false);
-                
-                if (isEffectActive && newCurrentUser.id) {
-                  setTimeout(() => {
-                    if (isEffectActive && newCurrentUser.id) {
-                      fetchUserProfileAndNotifications(newCurrentUser.id).catch(e => 
-                        console.error("[Auth Debug] Retry fetch user profile failed:", e)
-                      );
-                    }
-                  }, 2000);
-                }
+            try {
+              console.log("[Auth Debug] Initializing user after auth change");
+              await initializeUserAfterAuth(newCurrentUser.id);
+              console.log("[Auth Debug] Successfully initialized user");
+            } catch (profileError) {
+              console.error("[Auth Debug] Error initializing user on auth change:", profileError);
+              safeSetProfileLoading(false);
+              
+              if (isEffectActive && newCurrentUser.id) {
+                setTimeout(() => {
+                  if (isEffectActive && newCurrentUser.id) {
+                    initializeUserAfterAuth(newCurrentUser.id).catch(e => 
+                      console.error("[Auth Debug] Retry user initialization failed:", e)
+                    );
+                  }
+                }, 2000);
               }
             }
           } else {
@@ -421,125 +530,29 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
   }, [refreshAuthState, fetchUserProfileAndNotifications, clearAllTimeouts, safeSetProfileLoading, profile?.id, loading]);
 
-  // Effect for Realtime Notification Subscription
-  useEffect(() => {
-    const currentUserId = user?.id;
-
-    const setupNotificationChannel = async () => {
-      // Don't proceed if component unmounted
-      if (!mountedRef.current) return;
-      
-      // Cleanup previous channel if it exists
-      if (notificationChannelRef.current) {
-        try {
-          await supabase.removeChannel(notificationChannelRef.current);
-        } catch (err) {
-          console.error('Error removing previous notification channel:', err);
-        }
-        notificationChannelRef.current = null;
-      }
-
-      if (!currentUserId || !mountedRef.current) return;
-
-      try {
-        console.log(`Setting up notification channel for user ${currentUserId}`);
-        
-        // Create a simple channel name with no special characters
-        const channelName = `notifications_${currentUserId.replace(/-/g, '_')}`;
-        
-        const channel = supabase
-          .channel(channelName)
-          .on(
-            'postgres_changes',
-            { 
-              event: 'INSERT', 
-              schema: 'public', 
-              table: 'notifications', 
-              filter: `user_id=eq.${currentUserId}` 
-            },
-            (payload) => {
-              console.log('New notification received:', payload);
-              if (mountedRef.current) {
-                refreshUnreadCount();
-              }
-            }
-          )
-          .subscribe((status, err) => {
-            if (status === 'SUBSCRIBED') {
-              console.log(`Subscribed to notifications for user ${currentUserId}`);
-            } else if (err) {
-              console.error(`Notification subscription error for user ${currentUserId}:`, err);
-              
-              // Try to re-subscribe once on error after a delay
-              if (mountedRef.current && err) {
-                setTimeout(() => {
-                  if (mountedRef.current && user?.id === currentUserId) {
-                    setupNotificationChannel().catch(e => 
-                      console.error("Notification channel retry failed:", e)
-                    );
-                  }
-                }, 5000);
-              }
-            }
-          });
-          
-        if (mountedRef.current) {
-          notificationChannelRef.current = channel;
-        } else {
-          // If component unmounted during setup, immediately clean up
-          supabase.removeChannel(channel).catch(err => 
-            console.error("Error removing channel after unmount:", err)
-          );
-        }
-      } catch (error) {
-        console.error("Error setting up notification channel:", error);
-      }
-    };
-
-    setupNotificationChannel();
-
-    return () => {
-      // Immediately mark component as unmounted
-      mountedRef.current = false;
-      
-      // Clean up timeouts
-      clearAllTimeouts();
-      
-      // Clean up notification channel synchronously
-      if (notificationChannelRef.current) {
-        try {
-          // Use Promise.resolve to handle both sync and async cases
-          Promise.resolve(supabase.removeChannel(notificationChannelRef.current))
-            .catch(error => {
-              console.error('Error removing notification channel on cleanup:', error);
-            })
-            .finally(() => {
-              notificationChannelRef.current = null;
-            });
-        } catch (error) {
-          console.error('Error initiating channel cleanup:', error);
-          notificationChannelRef.current = null;
-        }
-      }
-    };
-  }, [user?.id, refreshUnreadCount, clearAllTimeouts]);
-
-  // Login function with proper error handling and retry
-  const login = async (email: string, password: string) => {
+  // Finally update the login function to use initializeUserAfterAuth
+  const login = useCallback(async (email: string, password: string) => {
     try {
       safeSetProfileLoading(true);
-      return await withRetry(async () => {
+      const authData = await withRetry(async () => {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
         return data;
       }, 1); // 1 retry for login
+
+      // If login successful, immediately initialize the user
+      if (authData.user) {
+        await initializeUserAfterAuth(authData.user.id);
+      }
+
+      return authData;
     } catch (error) {
       console.error("Login error after retries:", error);
       throw error; // Re-throw for UI handling
     } finally {
       safeSetProfileLoading(false);
     }
-  };
+  }, [initializeUserAfterAuth, safeSetProfileLoading]);
 
   // Signup function with proper error handling and retry
   const signUp = async (email: string, password: string, fullName?: string) => {

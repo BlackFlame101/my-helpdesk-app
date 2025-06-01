@@ -1,11 +1,7 @@
 // lib/dataService.ts
-import { supabase } from './supabaseClient'; // Ensure this path is correct
+import { supabase } from './supabaseClient'; 
 
-// --- Interfaces ---
-
-// Access environment variable directly here for manual URL construction fallback
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-
 
 export interface TicketType {
   id: number;
@@ -154,22 +150,42 @@ const TICKET_SELECT_QUERY = `
   assignee_profile:profiles!tickets_assignee_id_fkey ( id, full_name, avatar_url, role, specialization_id, specializations:specializations!profiles_specialization_id_fkey(id, name, description) )
 `;
 
-
 export async function fetchTicketsForUser(limit: number, offset: number): Promise<{ tickets: Ticket[], count: number | null }> {
-  const { data, error, count } = await supabase
-    .from('tickets')
-    .select(`${TICKET_SELECT_QUERY}`, { count: 'exact' })
+  // Get current user and their profile
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
+  if (!profile) throw new Error('Profile not found');
+
+  let query = supabase.from('tickets').select(`${TICKET_SELECT_QUERY}`, { count: 'exact' });
+
+  // Filter tickets based on user role
+  if (profile.role === 'customer') {
+    // Customers can only see their own tickets
+    query = query.eq('requester_id', user.id);
+  } else if (profile.role === 'agent') {
+    // Agents can see tickets assigned to them or unassigned tickets
+    query = query.or(`assignee_id.eq.${user.id},assignee_id.is.null`);
+  }
+  // Admins can see all tickets, so no additional filtering needed
+
+  const { data, error, count } = await query
     .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1); // Supabase range is inclusive
+    .range(offset, offset + limit - 1);
 
   if (error) { console.error('Error fetching tickets:', error.message); throw error; }
   return { tickets: (data as unknown as Ticket[]) || [], count };
 }
 
 export async function createTicket(ticketData: NewTicketData): Promise<Ticket | null> {
-  const { data, error } = await supabase.from('tickets').insert([{ ...ticketData }]).select(TICKET_SELECT_QUERY).single();
-  if (error) { console.error('Error creating ticket:', error.message); throw error; }
-  return data as unknown as Ticket | null;
+    const { data, error } = await supabase.from('tickets').insert([{ ...ticketData }]).select(TICKET_SELECT_QUERY).single();
+    if (error) { 
+        console.error('Error creating ticket:', error.message); 
+        console.error('Full error:', error);
+        throw error; 
+    }
+    return data as unknown as Ticket | null;
 }
 
 export async function fetchTicketPriorities(): Promise<PriorityOption[]> {
@@ -1161,4 +1177,39 @@ export async function incrementKBArticleViewCount(articleId: number): Promise<vo
     if (error) {
         console.error('Error incrementing view count for article #', articleId, ':', error)
     }
+}
+
+export async function fetchCustomers(): Promise<UserProfile[]> {
+    const { data, error } = await supabase
+        .from('profiles')
+        .select(`
+            id, full_name, avatar_url, role
+        `)
+        .eq('role', 'customer')
+        .order('full_name', { ascending: true });
+
+    if (error) { console.error('Error fetching customers:', error.message); throw error; }
+    return data as UserProfile[] || [];
+}
+
+export async function fetchKBCategoryById(id: number): Promise<KBCategory | null> {
+    const { data, error } = await supabase
+        .from('kb_categories')
+        .select(`
+            *,
+            kb_articles ( count )
+        `)
+        .eq('id', id)
+        .single();
+
+    if (error) {
+        console.error(`Error fetching KB category #${id}:`, error.message);
+        if (error.code === 'PGRST116') return null; // Row not found
+        throw error;
+    }
+    
+    return data ? {
+        ...data,
+        article_count: Array.isArray(data.kb_articles) ? data.kb_articles[0]?.count || 0 : 0
+    } : null;
 }

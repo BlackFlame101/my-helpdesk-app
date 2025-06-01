@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import ChatbotWindow from '../../components/chatbot/ChatbotWindow'; // Adjust path
+import ChatbotWindow from '@/components/chatbot/ChatbotWindow'; // Adjust path
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 import {
@@ -18,7 +18,8 @@ import {
     getAvatarPublicUrl,
     fetchUserNotifications, Notification as NotificationType,
     fetchTicketTypes, TicketType, // Added
-    fetchCompatibleAgentsForTicketType // Added
+    fetchCompatibleAgentsForTicketType, // Added
+    fetchCustomers, UserProfile
 } from '@/lib/dataService';
 
 import { useIsMobile, useIsTablet } from '@/hooks/use-mobile';
@@ -163,13 +164,43 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
         fetchTicketTypes()
       ]);
 
+      // Update tickets only if the array length changed or any ticket IDs are different
+      const shouldUpdateTickets = tickets.length !== ticketData.tickets.length || 
+        tickets.some((ticket, index) => ticket.id !== ticketData.tickets[index]?.id);
+      if (shouldUpdateTickets) {
+        setTickets(ticketData.tickets);
+      }
 
-      setTickets(prev => JSON.stringify(prev) !== JSON.stringify(ticketData.tickets) ? ticketData.tickets : prev);
-      setTotalTickets(ticketData.count); // Set total count for pagination
-      setPriorities(prev => JSON.stringify(prev) !== JSON.stringify(fetchedPriorities) ? fetchedPriorities : prev);
-      setStatuses(prev => JSON.stringify(prev) !== JSON.stringify(fetchedStatuses) ? fetchedStatuses : prev);
-      setAgents(prev => JSON.stringify(prev) !== JSON.stringify(fetchedAgents) ? fetchedAgents : prev);
-      setTicketTypes(prev => JSON.stringify(prev) !== JSON.stringify(fetchedTicketTypes) ? fetchedTicketTypes : prev);
+      // Always update total count as it's a simple value
+      setTotalTickets(ticketData.count);
+
+      // Update priorities only if the array length changed or any priority IDs are different
+      const shouldUpdatePriorities = priorities.length !== fetchedPriorities.length ||
+        priorities.some((priority, index) => priority.id !== fetchedPriorities[index]?.id);
+      if (shouldUpdatePriorities) {
+        setPriorities(fetchedPriorities);
+      }
+
+      // Update statuses only if the array length changed or any status IDs are different
+      const shouldUpdateStatuses = statuses.length !== fetchedStatuses.length ||
+        statuses.some((status, index) => status.id !== fetchedStatuses[index]?.id);
+      if (shouldUpdateStatuses) {
+        setStatuses(fetchedStatuses);
+      }
+
+      // Update agents only if the array length changed or any agent IDs are different
+      const shouldUpdateAgents = agents.length !== fetchedAgents.length ||
+        agents.some((agent, index) => agent.id !== fetchedAgents[index]?.id);
+      if (shouldUpdateAgents) {
+        setAgents(fetchedAgents);
+      }
+
+      // Update ticket types only if the array length changed or any type IDs are different
+      const shouldUpdateTicketTypes = ticketTypes.length !== fetchedTicketTypes.length ||
+        ticketTypes.some((type, index) => type.id !== fetchedTicketTypes[index]?.id);
+      if (shouldUpdateTicketTypes) {
+        setTicketTypes(fetchedTicketTypes);
+      }
 
       setDataError(null);
     } catch (err: any) {
@@ -185,7 +216,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
         setIsBackgroundLoading(false);
       }
     }
-  }, [session, showToast, currentPage, itemsPerPage]); // Added currentPage and itemsPerPage
+  }, [session, showToast, currentPage, itemsPerPage, tickets, priorities, statuses, agents, ticketTypes]); // Added currentPage and itemsPerPage
 
   useEffect(() => {
     if (authLoading) {
@@ -264,8 +295,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
     }
   };
 
-  const handleCreateTicketSubmit = async (formData: { subject: string; description: string; priorityId: string; ticketTypeId: string }) => { // Added ticketTypeId
-    
+  const handleCreateTicketSubmit = async (formData: { subject: string; description: string; priorityId: string; ticketTypeId: string; requesterId?: string }) => {
     if (!user) {
       showToast({ title: "Error", description: "You must be logged in.", variant: "destructive" });
       return;
@@ -277,21 +307,35 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
       subject: formData.subject,
       description: formData.description,
       priority_id: parseInt(formData.priorityId, 10),
-      requester_id: user.id,
+      requester_id: formData.requesterId || user.id,
       status_id: openStatusId,
-      ticket_type_id: parseInt(formData.ticketTypeId, 10), // Added
+      ticket_type_id: parseInt(formData.ticketTypeId, 10)
     };
-    console.log("--- Creating Ticket (Agent Test) ---");
-    console.log("Agent user from useAuth:", JSON.stringify(user, null, 2));
-    console.log("Agent User ID being sent as requester_id:", user?.id);
-    console.log("Full payload being sent by agent:", JSON.stringify(newTicketPayload, null, 2));
 
     try {
       const created = await createTicket(newTicketPayload);
       if (created) {
-        setTickets(prev => [created, ...prev]);
+        // Fetch the complete ticket data to get the assigned agent information
+        const offset = (currentPage - 1) * itemsPerPage;
+        const { tickets: updatedTickets } = await fetchTicketsForUser(itemsPerPage, offset);
+        
+        // Find the newly created ticket in the updated list
+        const updatedTicket = updatedTickets.find(t => t.id === created.id) || created;
+        
+        setTickets(prev => {
+          // Replace the ticket if it exists, otherwise add it to the beginning
+          const exists = prev.some(t => t.id === updatedTicket.id);
+          if (exists) {
+            return prev.map(t => t.id === updatedTicket.id ? updatedTicket : t);
+          }
+          return [updatedTicket, ...prev];
+        });
+        
         setNewTicketOpen(false);
-        showToast({ title: "Success", description: `Ticket "${created.subject}" created.` });
+        showToast({ 
+          title: "Success", 
+          description: `Ticket "${created.subject}" created${updatedTicket.assignee_profile ? ` and assigned to ${updatedTicket.assignee_profile.full_name}` : ''}.` 
+        });
       }
     } catch (error: any) {
       console.error("Failed to create ticket:", error);
@@ -365,8 +409,8 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
   };
 
   const handleAssignTicket = async (ticketId: number, agentId: string | null) => {
-    if (!isAgent) {
-      showToast({ title: "Permission Denied", description: "Only agents can assign tickets.", variant: "destructive" });
+    if (!(isAgent || isAdmin)) {
+      showToast({ title: "Permission Denied", description: "Only agents and admins can assign tickets.", variant: "destructive" });
       return;
     }
     setIsAssigningTicket(true);
@@ -389,58 +433,57 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
   };
 
   const handlePriorityChange = async (ticketId: number, priorityId: number) => {
-    if (!isAgent) { // Assuming only agents can change priority, adjust if needed
-        showToast({ title: "Permission Denied", description: "Only agents can change ticket priority.", variant: "destructive" });
-        return;
+    if (!(isAgent || isAdmin)) {
+      showToast({ title: "Permission Denied", description: "Only agents and admins can change ticket priority.", variant: "destructive" });
+      return;
     }
     const priorityObject = priorities.find(p => p.id === priorityId);
     if (!priorityObject) {
-        showToast({ title: "Error", description: `Invalid priority selected.`, variant: "destructive" });
-        return;
+      showToast({ title: "Error", description: `Invalid priority selected.`, variant: "destructive" });
+      return;
     }
 
     setIsUpdatingPriority(true);
     try {
-        const updatedTicket = await updateTicketPriority(ticketId, priorityId);
-        if (updatedTicket) {
-            setTickets(prevTickets => prevTickets.map(t => (t.id === ticketId ? updatedTicket : t)));
-            if (selectedTicketDetail?.id === ticketId) {
-                setSelectedTicketDetail(updatedTicket);
-            }
-            showToast({ description: `Ticket #${ticketId} priority updated to ${priorityObject.name}.` });
+      const updatedTicket = await updateTicketPriority(ticketId, priorityId);
+      if (updatedTicket) {
+        setTickets(prevTickets => prevTickets.map(t => (t.id === ticketId ? updatedTicket : t)));
+        if (selectedTicketDetail?.id === ticketId) {
+          setSelectedTicketDetail(updatedTicket);
         }
+        showToast({ description: `Ticket #${ticketId} priority updated to ${priorityObject.name}.` });
+      }
     } catch (error: any) {
-        console.error(`Failed to update priority for ticket #${ticketId}:`, error);
-        showToast({ title: "Update Failed", description: error.message || "Could not update priority.", variant: "destructive" });
+      console.error(`Failed to update priority for ticket #${ticketId}:`, error);
+      showToast({ title: "Update Failed", description: error.message || "Could not update priority.", variant: "destructive" });
     } finally {
-        setIsUpdatingPriority(false);
+      setIsUpdatingPriority(false);
     }
   };
 
   const handleStatusChange = async (ticketId: number, newStatusName: string) => {
-    
-    if (!isAgent) {
-        showToast({ title: "Permission Denied", description: "Only agents can change ticket status.", variant: "destructive" });
-        return;
+    if (!(isAgent || isAdmin)) {
+      showToast({ title: "Permission Denied", description: "Only agents and admins can change ticket status.", variant: "destructive" });
+      return;
     }
     const statusObject = statuses.find(s => s.name === newStatusName);
     if (!statusObject) {
-        showToast({ title: "Error", description: `Invalid status selected: ${newStatusName}`, variant: "destructive" });
-        return;
+      showToast({ title: "Error", description: `Invalid status selected: ${newStatusName}`, variant: "destructive" });
+      return;
     }
     setIsUpdatingTicket(true);
     try {
-        const updatedTicket = await updateTicketStatus(ticketId, statusObject.id);
-        if (updatedTicket) {
-            setTickets(prevTickets => prevTickets.map(t => (t.id === ticketId ? updatedTicket : t)));
-            if (selectedTicketDetail?.id === ticketId) { setSelectedTicketDetail(updatedTicket); }
-            showToast({ description: `Ticket #${ticketId} status updated to ${newStatusName}` });
-        }
+      const updatedTicket = await updateTicketStatus(ticketId, statusObject.id);
+      if (updatedTicket) {
+        setTickets(prevTickets => prevTickets.map(t => (t.id === ticketId ? updatedTicket : t)));
+        if (selectedTicketDetail?.id === ticketId) { setSelectedTicketDetail(updatedTicket); }
+        showToast({ description: `Ticket #${ticketId} status updated to ${newStatusName}` });
+      }
     } catch (error: any) {
-        console.error(`Failed to update status for ticket #${ticketId}:`, error);
-        showToast({ title: "Update Failed", description: error.message || "Could not update status.", variant: "destructive" });
+      console.error(`Failed to update status for ticket #${ticketId}:`, error);
+      showToast({ title: "Update Failed", description: error.message || "Could not update status.", variant: "destructive" });
     } finally {
-        setIsUpdatingTicket(false);
+      setIsUpdatingTicket(false);
     }
   };
 
@@ -478,112 +521,10 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
   return (
     <TooltipProvider>
       <div className="flex h-screen bg-background text-foreground">
-        
-        <div className="w-14 border-r bg-muted/40 flex flex-col items-center py-4 z-20">
-          
-          <div className="flex flex-col items-center gap-y-3 flex-1">
-            {[
-              { name: "dashboard", label: "Dashboard", icon: Home },
-              { name: "tickets", label: "Tickets", icon: MessageSquare },
-              { name: "reports", label: "Reports", icon: BarChart2 },
-              { name: "users", label: "Users", icon: Users },
-              { name: "automations", label: "Automations", icon: Zap },
-              { name: "knowledge", label: "Knowledge Base", icon: Layers },
-            ].map((item) => (
-              <Tooltip key={item.name}>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant={activeNavItem === item.name ? "default" : "ghost"}
-                    size="icon"
-                    className={`rounded-lg w-10 h-10 ${activeNavItem === item.name ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
-                    onClick={() => handleNavClick(item.name)}
-                  >
-                    <item.icon size={20} />
-                    <span className="sr-only">Navigation for {item.label}</span>
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="right">{item.label}</TooltipContent>
-              </Tooltip>
-            ))}
-          </div>
-          
-          <div className="mt-auto flex flex-col items-center gap-y-3 mb-4">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="rounded-lg w-10 h-10 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => handleNavClick("settings")}>
-                  <Settings size={20} />
-                  <span className="sr-only">Settings</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right">Settings</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="rounded-lg w-10 h-10 text-muted-foreground hover:bg-muted hover:text-foreground relative" 
-                  onClick={() => router.push('/notifications')}
-                >
-                  <Bell size={20} />
-                  {contextUnreadCount > 0 && (
-                    <Badge variant="destructive" className="absolute -top-1 -right-1 h-4 w-4 p-0 flex items-center justify-center text-xs">
-                      {contextUnreadCount > 9 ? '9+' : contextUnreadCount}
-                    </Badge>
-                  )}
-                  <span className="sr-only">Notifications</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right">Notifications</TooltipContent>
-            </Tooltip>
-             <DropdownMenu>
-                <Tooltip>
-                    <TooltipTrigger asChild>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="rounded-lg w-10 h-10">
-                                <Avatar className="h-8 w-8" key={profile?.avatar_url || profile?.id}>
-                                    <AvatarImage src={profile?.avatar_url ? getAvatarPublicUrl(profile.avatar_url) || undefined : undefined} alt={profile?.full_name || user?.email || 'User'} />
-                                    <AvatarFallback>{profile?.full_name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U'}</AvatarFallback>
-                                </Avatar>
-                            </Button>
-                        </DropdownMenuTrigger>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">Profile</TooltipContent>
-                </Tooltip>
-                <DropdownMenuContent align="end" side="right" className="ml-2">
-                    <DropdownMenuLabel>{profile?.full_name || user?.email}</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => router.push('/profile')}>
-                        My Profile
-                    </DropdownMenuItem>
-                    {isAdmin && (
-                        <DropdownMenuItem onClick={() => router.push('/admin/management')}>
-                            Admin Management
-                        </DropdownMenuItem>
-                    )}
-                    <DropdownMenuItem>Support</DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    
-                    <DropdownMenuItem
-                        asChild 
-                        onSelect={(e) => e.preventDefault()} 
-                        className="p-0 focus:bg-transparent" 
-                    >
-                       <LogoutButton />
-                    </DropdownMenuItem>
-                    
-                </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-
-        
-        <div className="flex-1 flex flex-col overflow-y-auto">
-          
-          <div className="flex flex-1 overflow-hidden">
-            
+        <div className="flex-1 flex flex-col">
+          <div className="flex flex-1">
             {!isMobile && (
-              <div className="w-64 border-r bg-muted/20 p-4 flex flex-col gap-6 overflow-y-auto">
+              <div className="w-64 border-r bg-muted/20 p-4 flex flex-col gap-6">
                 
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-semibold">Ticket Views</h2>
@@ -623,7 +564,7 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
             )}
 
             
-            <main className="flex-1 flex flex-col overflow-y-auto p-4 md:p-6 pb-20 w-full"> {/* Changed overflow-hidden to overflow-y-auto */}
+            <main className="flex-1 p-4 md:p-6 pb-20 overflow-y-auto">
               
               <div className="flex items-center justify-between mb-4 flex-wrap">
                 <h1 className="text-2xl font-semibold"> {selectedStatusFilter === "all" ? "All Tickets" : `${selectedStatusFilter} Tickets`} </h1>
@@ -668,7 +609,20 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
                             </div>
                             <div className="flex items-center gap-x-1 flex-shrink-0">
                               {ticket.ticket_types && <Badge variant="outline" className="text-xs capitalize">{ticket.ticket_types.name}</Badge>}
-                              {currentStatus && ( <Badge variant={currentStatus.name === 'Open' ? 'default' : currentStatus.name === 'Resolved' || currentStatus.name === 'Closed' ? 'outline' : 'secondary'} className="whitespace-nowrap capitalize"> {currentStatus.name} </Badge> )}
+                              {currentStatus && (
+                                <Badge 
+                                  variant={
+                                    currentStatus.name.toLowerCase() === 'open' ? 'info' :
+                                    currentStatus.name.toLowerCase() === 'in progress' ? 'pending' :
+                                    currentStatus.name.toLowerCase() === 'resolved' ? 'success' :
+                                    currentStatus.name.toLowerCase() === 'closed' ? 'closed' :
+                                    'secondary'
+                                  } 
+                                  className="whitespace-nowrap capitalize"
+                                >
+                                  {currentStatus.name}
+                                </Badge>
+                              )}
                             </div>
                           </div>
                           <CardDescription className="text-xs text-muted-foreground">
@@ -814,18 +768,19 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
                                 <div>
                                     <Label className="text-xs">Status</Label>
                                     <Select
-                                        
                                         value={statuses.find(s => s.id === selectedTicketDetail.status_id)?.name}
                                         onValueChange={(newStatusName) => handleStatusChange(selectedTicketDetail.id, newStatusName)}
                                         disabled={!(isAgent || isAdmin) || isUpdatingTicket || isProfileLoading}
                                     >
-                                        <SelectTrigger disabled={!(isAgent || isAdmin) || isUpdatingTicket || isProfileLoading}><SelectValue placeholder="Select status..." /></SelectTrigger>
+                                        <SelectTrigger disabled={!(isAgent || isAdmin) || isUpdatingTicket || isProfileLoading}>
+                                            <SelectValue placeholder="Select status..." />
+                                        </SelectTrigger>
                                         <SelectContent>
                                             {statuses.map(s => <SelectItem key={s.id} value={s.name}>{s.name}</SelectItem>)}
                                         </SelectContent>
                                     </Select>
                                 </div>
-                                {(isAgent || isAdmin) && ( // Priority dropdown for agents
+                                {(isAgent || isAdmin) && ( // Priority dropdown for agents and admins
                                 <div className="mt-2">
                                     <Label className="text-xs">Priority</Label>
                                     <Select
@@ -917,7 +872,6 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
           )}
         </DialogContent>
       </Dialog>
-    <ChatbotWindow /> {/* Add the chatbot window here */}
     </TooltipProvider>
   );
 }
@@ -925,83 +879,190 @@ const loadInitialData = useCallback(async (showLoadingIndicator = true) => {
 
 
 interface NewTicketFormProps {
-  onSubmit: (data: { subject: string; description: string; priorityId: string; ticketTypeId: string }) => Promise<void>; // Added ticketTypeId
+  onSubmit: (data: { subject: string; description: string; priorityId: string; ticketTypeId: string; requesterId?: string }) => Promise<void>;
   priorities: PriorityOption[];
-  ticketTypes: TicketType[]; // Added
+  ticketTypes: TicketType[];
   isSubmittingProfileUpdate?: boolean;
 }
 
 const NewTicketForm: React.FC<NewTicketFormProps> = ({ onSubmit, priorities, ticketTypes, isSubmittingProfileUpdate }) => {
+  const { user, isAgent } = useAuth();
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
   const [priorityId, setPriorityId] = useState<string>(() => {
     const normal = priorities.find(p => p.name.toLowerCase() === 'normal');
     return normal ? String(normal.id) : (priorities.length > 0 ? String(priorities[0].id) : '');
   });
-  const [ticketTypeId, setTicketTypeId] = useState<string>(ticketTypes.length > 0 ? String(ticketTypes[0].id) : ''); // Added
+  const [ticketTypeId, setTicketTypeId] = useState<string>(ticketTypes.length > 0 ? String(ticketTypes[0].id) : '');
+  const [requesterId, setRequesterId] = useState<string>('');
+  const [customers, setCustomers] = useState<UserProfile[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { toast: showToast } = useToast(); // Use showToast from the hook
+  const { toast: showToast } = useToast();
+
+  // Fetch customers if user is an agent
+  useEffect(() => {
+    if (isAgent) {
+      const loadCustomers = async () => {
+        try {
+          const fetchedCustomers = await fetchCustomers();
+          setCustomers(fetchedCustomers);
+        } catch (error) {
+          console.error('Failed to load customers:', error);
+          showToast({ 
+            title: "Error", 
+            description: "Failed to load customers list.", 
+            variant: "destructive" 
+          });
+        }
+      };
+      loadCustomers();
+    }
+  }, [isAgent, showToast]);
 
   useEffect(() => {
     if (!priorityId && priorities.length > 0) {
       const normal = priorities.find(p => p.name.toLowerCase() === 'normal');
       setPriorityId(normal ? String(normal.id) : String(priorities[0].id));
     }
-    if (!ticketTypeId && ticketTypes.length > 0) { // Set default ticket type if not set and types are available
-        setTicketTypeId(String(ticketTypes[0].id));
+    if (!ticketTypeId && ticketTypes.length > 0) {
+      setTicketTypeId(String(ticketTypes[0].id));
     }
-  }, [priorities, priorityId, ticketTypes, ticketTypeId]);
-
+    // Set default requesterId to current user if not an agent
+    if (!isAgent && user) {
+      setRequesterId(user.id);
+    }
+  }, [priorities, priorityId, ticketTypes, ticketTypeId, isAgent, user]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!priorityId) {
-        showToast({ title: "Missing Field", description: "Please select a priority.", variant: "destructive"});
-        return;
+      showToast({ title: "Missing Field", description: "Please select a priority.", variant: "destructive"});
+      return;
     }
-    if (!ticketTypeId) { // Added check for ticketTypeId
-        showToast({ title: "Missing Field", description: "Please select a ticket type.", variant: "destructive"});
-        return;
+    if (!ticketTypeId) {
+      showToast({ title: "Missing Field", description: "Please select a ticket type.", variant: "destructive"});
+      return;
     }
+    if (isAgent && !requesterId) {
+      showToast({ title: "Missing Field", description: "Please select a requester.", variant: "destructive"});
+      return;
+    }
+
     setIsSubmitting(true);
-    await onSubmit({ subject, description, priorityId, ticketTypeId }); // Added ticketTypeId
-    setIsSubmitting(false);
-    // Optionally reset form fields here if dialog doesn't auto-close or re-mount
-    // setSubject(''); setDescription(''); setPriorityId(...); setTicketTypeId(...);
+    try {
+      await onSubmit({ 
+        subject, 
+        description, 
+        priorityId, 
+        ticketTypeId,
+        requesterId: isAgent ? requesterId : user?.id
+      });
+    } catch (error: any) {
+      console.error('Failed to submit ticket:', error);
+      showToast({ 
+        title: "Error", 
+        description: error.message || "Failed to create ticket. Please try again.", 
+        variant: "destructive" 
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <form onSubmit={handleSubmit} className="grid gap-4 py-4">
-      <div className="grid gap-2"> 
-        <Label htmlFor="form-subject">Subject</Label> 
-        <Input id="form-subject" value={subject} onChange={(e) => setSubject(e.target.value)} required disabled={isSubmitting || isSubmittingProfileUpdate} /> 
+      <div className="grid gap-2">
+        <Label htmlFor="form-subject">Subject</Label>
+        <Input 
+          id="form-subject" 
+          value={subject} 
+          onChange={(e) => setSubject(e.target.value)} 
+          required 
+          disabled={isSubmitting || isSubmittingProfileUpdate} 
+        />
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div className="grid gap-2"> 
-          <Label htmlFor="form-priority">Priority</Label> 
-          <Select value={priorityId} onValueChange={setPriorityId} required disabled={isSubmitting || priorities.length === 0 || isSubmittingProfileUpdate}> 
-            <SelectTrigger id="form-priority"><SelectValue placeholder="Select priority" /></SelectTrigger> 
-            <SelectContent> {priorities.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)} </SelectContent> 
-          </Select> 
-        </div>
-        <div className="grid gap-2"> {/* Added Ticket Type Select */}
-          <Label htmlFor="form-ticket-type">Ticket Type</Label>
-          <Select value={ticketTypeId} onValueChange={setTicketTypeId} required disabled={isSubmitting || ticketTypes.length === 0 || isSubmittingProfileUpdate}>
-            <SelectTrigger id="form-ticket-type"><SelectValue placeholder="Select type..." /></SelectTrigger>
+
+      {isAgent && (
+        <div className="grid gap-2">
+          <Label htmlFor="form-requester">Requester</Label>
+          <Select 
+            value={requesterId} 
+            onValueChange={setRequesterId} 
+            required 
+            disabled={isSubmitting || customers.length === 0 || isSubmittingProfileUpdate}
+          >
+            <SelectTrigger id="form-requester">
+              <SelectValue placeholder="Select requester..." />
+            </SelectTrigger>
             <SelectContent>
-              {ticketTypes.map(tt => <SelectItem key={tt.id} value={String(tt.id)}>{tt.name}</SelectItem>)}
+              {customers.map(customer => (
+                <SelectItem key={customer.id} value={customer.id}>
+                  {customer.full_name || customer.id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-2">
+          <Label htmlFor="form-priority">Priority</Label>
+          <Select 
+            value={priorityId} 
+            onValueChange={setPriorityId} 
+            required 
+            disabled={isSubmitting || priorities.length === 0 || isSubmittingProfileUpdate}
+          >
+            <SelectTrigger id="form-priority">
+              <SelectValue placeholder="Select priority" />
+            </SelectTrigger>
+            <SelectContent>
+              {priorities.map(p => (
+                <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="form-ticket-type">Ticket Type</Label>
+          <Select 
+            value={ticketTypeId} 
+            onValueChange={setTicketTypeId} 
+            required 
+            disabled={isSubmitting || ticketTypes.length === 0 || isSubmittingProfileUpdate}
+          >
+            <SelectTrigger id="form-ticket-type">
+              <SelectValue placeholder="Select type..." />
+            </SelectTrigger>
+            <SelectContent>
+              {ticketTypes.map(tt => (
+                <SelectItem key={tt.id} value={String(tt.id)}>{tt.name}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
       </div>
-      <div className="grid gap-2"> 
-        <Label htmlFor="form-description">Description</Label> 
-        <Textarea id="form-description" value={description} onChange={(e) => setDescription(e.target.value)} required rows={5} disabled={isSubmitting || isSubmittingProfileUpdate} /> 
+
+      <div className="grid gap-2">
+        <Label htmlFor="form-description">Description</Label>
+        <Textarea 
+          id="form-description" 
+          value={description} 
+          onChange={(e) => setDescription(e.target.value)} 
+          required 
+          rows={5} 
+          disabled={isSubmitting || isSubmittingProfileUpdate} 
+        />
       </div>
-      <DialogFooter> 
-        <Button type="submit" disabled={isSubmitting || !priorityId || !ticketTypeId || isSubmittingProfileUpdate}> 
-          {isSubmitting ? "Submitting..." : "Create Ticket"} 
-        </Button> 
+
+      <DialogFooter>
+        <Button 
+          type="submit" 
+          disabled={isSubmitting || !priorityId || !ticketTypeId || (isAgent && !requesterId) || isSubmittingProfileUpdate}
+        >
+          {isSubmitting ? "Submitting..." : "Create Ticket"}
+        </Button>
       </DialogFooter>
     </form>
   );
